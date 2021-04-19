@@ -1,0 +1,229 @@
+---
+title: "HW1"
+author: "Ilayda Tezcan"
+date: "15 04 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+# Tourism Sector Analysis 2012-2020
+
+
+
+  In this homework, my aim is to demonstrate how tourism sector behaves or changes between 2012 and 2020 and also understand the economic impact of tourism.I took related data from TUIK website.You can see data from [here](https://data.tuik.gov.tr/Bulten/Index?p=Turizm-Istatistikleri-III.-Ceyrek:-Temmuz---Eylul,-2020-33674). Plot below shows quarterly tourism income in Million $ between 2012-2020.
+
+
+
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+library(readxl)
+library(readr)
+library(ggplot2)
+library(skimr)
+require(readxl)
+require(data.table)
+require(zoo)
+require(xts)
+library(data.table)
+
+turizm_geliri <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/turizm_geliri.csv", header=TRUE, sep = ";")
+
+
+ggplot(turizm_geliri, aes(Time,Income, group =1)) +
+  geom_line(color = "red", size = 1) +
+  geom_point(color = "darkred", size = 2) +
+  labs(title = "Quarterly Tourism Income", 
+       x = "Time",
+       y = "Income (in Million $)",
+       caption = "Source: TUIK"
+       ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.5),plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 13, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))+
+  geom_smooth(method = lm, color = "darkblue")
+
+
+
+```
+
++ Seasonal effect can be seen easily from the plot since it has a cyclic pattern. There is an increasing trend from the first quarter to the third quarter, while it is decreasing from third to one. Almost every year quarterly income from summer term doubles winter term. Spring and fall have approximately equivalent income. 
+
++ The chart shows a sharp decline in 2016. Tense policies with Russia and ISIS terrorist attacks in the country are among the biggest causes of the tourism crisis in 2016. Although not shown in the chart, tourism income was as low as in 2016, last seen in 1999.
+
++ Moreover, the second quarter of 2020 is an outlier as no one can come due to borders were closed because of Covid-19. Unfortunately, the effects of covid-19 are still valid and tourism revenues are far below what they should be.
+
++ Although there are periodic exceptions, it is possible to say that the chart is in an increasing trend.
+
+The next plot is regarding the number of visitors in Turkey.
+
+```{r Number of Visitors, message=FALSE, warning=FALSE, echo=FALSE}
+number_of_visitors <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/number_of_visitors.csv", header=TRUE, sep = ";")
+
+
+ggplot(number_of_visitors, aes(Date,Number.of.Visitors , group =1)) +
+  geom_line(color = "red", size = 1) +
+  geom_point(color = "darkred", size = 2) +
+  labs(title = "Number of Visitors", 
+       x = "Time",
+       y = "Visitors (Thousand)",
+       caption = "Source: TUIK"
+       ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.5),plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 13, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))+
+  geom_smooth(method = lm, color = "black")
+
+```
+
+
++ This graph has almost the same pattern as the previous quarterly income chart. There is quarterly similarity over years which is fitting the tourism income.
+
++ Number of visitors decreased in 2016 for the same reasons and also a rapid decline is seen in 2020 due to the pandemic.
+
+In the chart below, I will examine whether these data overlap or not.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+library(ggplot2)
+library(readxl)
+library(readr)
+library(skimr)
+require(readxl)
+require(data.table)
+require(zoo)
+require(xts)
+library(data.table)
+
+theme_set(theme_minimal())
+income_vs_visitor <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/income_vs_visitor.csv", header=TRUE, sep = ";")
+
+
+
+
+ggplot(income_vs_visitor, aes(x = Tarih, group =1)) + 
+  geom_line(aes(y = Income, color = "Income"), size = 1) +
+  geom_line(aes(y = Visitor, color= "Visitor"), size = 1) +
+  
+  labs(title = "Visitors vs Income", 
+       x = "Time",
+       y = "Visitors and Income",
+       caption = "Source: TUIK") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
++ Plot shows that the number of visitors and income are highly related and have the same pattern. The outliers are the same which has the same reasons for that values to be observed.
+
+
+
+Since plots showed total income and visitors for quarters, we can observe average expenditure per capita. 
+
+
+```{r avg expenditure, message=FALSE, warning=FALSE, echo=FALSE}
+average_expenditure <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/average_expenditure.csv", header=TRUE, sep = ";")
+
+
+ggplot(average_expenditure, aes(Time,Average.expenditure, group =1)) +
+  geom_line(color = "red", size = 1) +
+  geom_point(color = "darkred", size = 2) +
+  labs(title = "Average Expenditure per Capita ($) ", 
+       x = "Time",
+       y = "Expenditure",
+       caption = "Source: TUIK"
+       ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.5),plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 13, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))+
+  geom_smooth(method = lm, color = "black")
+```
+
+
++ It is observed that the amount spent per capita has decreased over the years. There is still quarterly pattern which is higher expenditure per capita in 4th and 3rd quarter, while low expenditure per capita in 1st and 2nd quarter. The reason for this may be the number of tourists in the summer and spring periods are higher compared to other periods.
+
++ Also 2020's 2nd quarter since there is no income and visitor as well.
+
++ I believe the main reason for decreasing trend overall is the exchange rate in USD/TRY.
+
+
+
+```{r exchange rate, message=FALSE, warning=FALSE, echo=FALSE}
+exchange_rate<-read_excel('C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/exchange_rate.xlsx',n_max=432)
+exchange_rate<-data.table(exchange_rate)
+names<-c("Date","Rate")
+setnames(exchange_rate,names(exchange_rate),names)
+exchange_rate$Date<-as.Date(exchange_rate$Date,format="%d-%m-%Y")
+exchange_rate$Rate<-as.numeric(exchange_rate$Rate)
+
+
+head(exchange_rate)
+plot(exchange_rate,main="Exchange Rate",xlab="Time",ylab="USD/TL",pch=15,col="red",cex=0.3,frame=FALSE)
+lines(lowess(exchange_rate),col="black", pch=25)
+```
+
++ Plot above shows USD/TL rate between 2012 and 2020. It can clearly be seen that the dollar exchange rate is rising. Even though the money spent by the tourists coming due to this rising exchange rate has increased on TL basis, it has decreased in terms of dollar rate.
+
++ The exchange rate, which increased to 7.20 in 2018 due to the Priest Brunson crisis with the USA can be seen as an abnormal observation. Besides, the municipal elections of that period caused the exchange rate to fluctuate so much.
+
++ Changes in exchange rates also affect inflation. The monthly % change graph of inflation based on the year 2003 is as follows.
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+inflation<-read_excel('C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/inflation.xlsx',n_max=111)
+inflation<-data.table(inflation)
+names<-c("Date","Rate")
+setnames(inflation,names(inflation),names)
+inflation$Date<-as.Date(inflation$Date,format="%d-%m-%Y")
+inflation$Rate<-as.numeric(inflation$Rate)
+
+
+head(inflation)
+plot(inflation,main="Monthly Inflation %",xlab="Time",ylab="Inflation Rate",pch=15,col="red",cex=0.4,frame=FALSE)
+lines(lowess(inflation),col="black", pch=15)
+
+
+```
+
++ From this graph, we can see that the Turkish currency is losing value. Also, even though market prices have increased by inflation, the dollar amount needed to change with the current dollar exchange rate is declining for a tourist. 
+
++  In addition, it is possible to say that the purchasing power of someone who spends in dollars will increase day by day.
+
+The last graphic below shows google trends data on the subject.
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+theme_set(theme_minimal())
+trends <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/trends.csv", header=TRUE, sep = ";")
+
+trends$Ay<-paste0(trends$Ay, rep("-15",length(trends$Ay)))
+trends$Ay<-as.Date(trends$Ay)
+
+ggplot( trends , aes(x = Ay, group =1)) + 
+  geom_line(aes(y = Holiday.in.Turkey , color = "Holiday in Turkey"), size = 1) +
+  geom_line(aes(y = Turkey.hotels, color= "Turkey Hotels"), size = 1) +
+  
+  labs(title = "Google Trends Data", 
+       x = "Time",
+       y = "Search Volume",
+       caption = "Source: Google Trends") +
+  theme(axis.text.x = element_text(angle = 0,size = 13, vjust = 0,5, hjust=1))
+```
+
++ I chose these two search data considering how I would search on Google if I went on vacation to another country. According to Google Trends data for 2012-2020, the maximum search volume was in July 2012 with "Turkey Hotels" keywords. 
+
++ Plot has the same cyclic patterns with the number of visitors and quarterly income chart. High rates are observed in summer terms. Also, there is an overall declining trend in search volume can be seen. 2016 and 2020 again have the lowest volumes due to the same reasons.
+
+
+
+### RMD file is [here](C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/hw1.rmd).
+
+### References
+
+[TUİK](https://data.tuik.gov.tr/Bulten/Index?p=Turizm-Istatistikleri-I.-Ceyrek:-Ocak---Mart,-2019-30600)  [EVDS](https://evds2.tcmb.gov.tr/index.php?/evds/serieMarket)
+[Google Trends](https://trends.google.com/trends/explore?date=2012-01-01%202020-12-31&q=Holiday%20in%20Turkey,Turkey%20hotels)
+[TCMB](https://www.tcmb.gov.tr/wps/wcm/connect/TR/TCMB+TR/Main+Menu/Istatistikler/Enflasyon+Verileri/Tuketici+Fiyatlari)
