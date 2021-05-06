@@ -1,0 +1,347 @@
+---
+title: "Homework 2"
+author: "İlayda Tezcan"
+date: "07.05.2021"
+output:
+  html_document:
+    code_folding: show
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+# Second Hand House Sales Analysis 
+
+As in the world, buying a house in Turkey is seen as a reasonable investment. As expected, the impact of Turkey's economic troubles on inflation increases house prices and investments in this area. Apart from buying a house just to make use of its existing money, most of the population uses a home loan to buy a house.People's tendency to take out home loans to buy a house is in line with interest rates set by banks and the government.
+With rising house prices, buyers are in great demand for second-hand house purchases. In this analysis, I will examine how the total number of the second-hand house sales in Turkey are affected by situations such as house credit interest rates and house prices.
+
+In this assignment, I got the relevant data from the [EVDS](https://evds2.tcmb.gov.tr/index.php?/evds/serieMarket) website, which includes monthly data from January 2013 to March 2021
+
+## Data Manipulation and Visualization 
+
+Initially, I examined the monthly total second-hand home sales chart since 2013 after manipulating the data.
+
+```{r, message=FALSE,warning=FALSE, echo=FALSE}
+library(readxl)
+library(readr)
+library(ggplot2)
+library(skimr)
+require(readxl)
+require(data.table)
+require(zoo)
+require(xts)
+library(data.table)
+library(lubridate)
+require(forecast)
+
+housedata <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/hw2data.csv", header=TRUE, sep = ";")
+
+housedata$Date <- as.Date(housedata$Date, format = "%d.%m.%Y") 
+
+housedata=as.data.table(housedata)
+
+library(ggplot2)
+ggplot(data=housedata,aes(x=Date,y=Total_houses_sold)) +  geom_line() +
+  geom_point(color = "darkred", size = 1)+ labs(title = "Total Number of Second Hand House Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+
+```
+
++ In visual inspection, we can say that the data is in overall increasing trend. Until 2018, it is observed that the data was scattered on a linear line, while after 2018 there is a fluctuating graph. In 2020, there are sharp ups and downs.
+
+
+```{r}
+housedata[,trend:=1:.N]
+ts_reg=lm(Total_houses_sold~trend,housedata)
+summary(ts_reg)
+```
+
++ In summary of the first regression model p-value is low but, Adjusted R-squared value is also low. Only the model I built with the trend does not seem meaningful enough.
+
+```{r}
+housedata[,trend_constant:=predict(ts_reg,housedata)]
+
+ ggplot(housedata ,aes(x=Date)) +
+        geom_line(aes(y=Total_houses_sold,color='real')) + 
+        geom_line(aes(y=trend_constant,color='trend')) + labs(title = "Total Number of Second Hand House Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+```
+
++ When we examine the trend in the chart, although it seems reasonable until 2018, after 2018 the fitted values are above actual values and do not explain the fluctuation in 2020.
+
++ I will continue by adding the month information to the regression model in order to understand whether the data we have shows a characteristic change according to the months.
+
+## Building Regression Model
+
+### Seasonal Effect
+
+```{r}
+housedata[,mon:=as.character(month(Date,label=T))]
+
+ts_reg=lm(Total_houses_sold~trend+mon,housedata)
+summary(ts_reg)
+```
+
++ After adding month information R-squared value is increased but not as much as we wanted. At the same time p-value is increased compared to model without month information. Also, it is observed that any month variable does not have significant importance. Still low R-square and low p-value (below 0.05) means that the model doesn't explain much of variation of the data but it is significant. 
+
+
+
+```{r}
+housedata[,trend_constant_as_month:=predict(ts_reg,housedata)]
+
+ggplot(housedata ,aes(x=Date)) +
+        geom_line(aes(y=Total_houses_sold,color='real')) + 
+        geom_line(aes(y=trend_constant_as_month,color='trend')) + labs(title = "Total Number of Second Hand House Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+```
+
++ It is difficult to understand whether there is a significant improvement in our model by visual inspection from this graph. However, it is possible to say that the statistics seem to fluctuate a lot without any detectable cyclic or seasonal trend.
+
+
+
+```{r}
+checkresiduals(ts_reg$residuals, lag=12)
+```
+
++ Until 2018 it seems like residuals have around zero mean and constant variance, but after some point variance increased significantly. 
+
++ Moreover autocorrelation graph seems highly correlated when lag equals to 1, which is reasonable due to previous month's sales are relevant with this month's sales. Since the value found in the autocorrelation with 1 lag is outside the confidence interval, it will be necessary to reduce this correlation to make the model better. Because the mistake it makes in the previous month affects my next month more.
+
++ Although, residuals visually seem to distributed normal we have still outlier points that we don't want.
+
++ As I mentioned at the beginning, most of the people who buy a house prefer to take house credits. As such, the interest rate applied to house credits can be a deterrent or incentive for the buyer. I will add monthly average house credit interest rate information to the regression model to make my model better.
+
+### Interest Rates on House Credits
+
+```{r}
+ts_reg=lm(Total_houses_sold~trend+mon+interestr,housedata)
+summary(ts_reg)
+```
+
++ After adding the monthly average home loan interest rate, the model's adjusted R-squared value nearly doubles as 0.42 and P-value is close to zero. In addition, it is seen from this summary that the interest rate is highly significant in this data.
+
+```{r}
+housedata[,trend_constant_as_month_interest:=predict(ts_reg,housedata)]
+
+ggplot(housedata ,aes(x=Date)) +
+        geom_line(aes(y=Total_houses_sold,color='real')) + 
+        geom_line(aes(y=trend_constant_as_month_interest,color='trend'))+ labs(title = "Total Number of Second Hand House Sales", x = "Time", y = "Sales")+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+```
+
++ Looking at the chart, we can say that interest rate variable is a better predictor to the volatility in the last 2 years. The housing sector is one of the most affected sectors by the increase in interest rates.
+
++ I learned through desktop search that house sales broke a record in June with the effect of low interest rates and campaigns. According to the data regarded house sales in Turkey in June 2020 increased by 209.7 percent compared to June 2019 and became 190 thousand 12. Thus, it was seen to the highest level on the basis of June.
+
+### Unit Prices for Houses
+
++ I continued by adding house unit prices to the analysis. What is meant by the unit price of housing is TL / m2. 
+
+```{r}
+ggplot(housedata ,aes(x=Date)) +
+        geom_line(aes(y=unit_tr,color='Unit House Prices in Turkey')) + 
+        geom_line(aes(y=unit_ist ,color='Unit House Prices in İstanbul')) + 
+        geom_line(aes(y=unit_ank ,color='Unit House Prices in Ankara')) + 
+        geom_line(aes(y=unit_izm ,color='Unit House Prices in İzmir'))+ labs(title = "Unit Price of Houses", x = "Time", y = "TL/m2")+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+```
+
++ In the graph, it is observed that the unit price of housing has an increasing trend over the years. There are many factors affecting this, such as high demand and the deterioration of Turkey's economic conditions increases inflation through  over the years. The fact that the housing unit prices in Istanbul are well above the Turkey average is due to the surplus of demand. By adding unit house prices to the regression model, I examined the effect on total house sales.
+
+```{r}
+ts_reg=lm(Total_houses_sold~trend+mon+interestr+unit_tr,housedata)
+summary(ts_reg)
+```
+
++ Although, the R-squared increased slightly, the adjusted R-square appears to have dropped. At the same time, the p-value is also increased. Since the importance of adding unit prices is also low, I will continue my model without adding this information.
+
++ Plot below, shows the graph with unit prices.
+
+```{r}
+
+housedata[,trend_constant_as_month_interest_unit_tr:=predict(ts_reg,housedata)]
+
+ggplot(housedata ,aes(x=Date)) +
+        geom_line(aes(y=Total_houses_sold,color='real')) + 
+        geom_line(aes(y=trend_constant_as_month_interest_unit_tr,color='trend'))+ 
+        geom_smooth(aes(y=trend_constant_as_month_interest_unit_tr))
+```
+
++ Most people who want to buy a house first examine the relevant postings in the region where they are looking for a house on the internet and determine a scenario in their mind accordingly. Considering what I would search for on Google if I were to buy a second hand house, I added the "Sahibinden Satılık Ev" search data to the model.
+
+### Google Search Data 
+
+```{r}
+ts_reg=lm(Total_houses_sold~trend+mon+interestr+google_trends,housedata)
+summary(ts_reg)
+```
+
++ As I included Google Trends data for "Sahibinden Satılık Ev", it is observed that google search and total price of the sold houses are highly correlated.Its significance is even more effective than interest rates.
+
++ Adjusted R-squared increased while p-value is decreased. The regression model has become much more meaningful.
+
+
+```{r}
+housedata[,trend_constant_as_month_interest_trends:=predict(ts_reg,housedata)]
+
+ggplot(housedata ,aes(x=Date)) +
+        geom_line(aes(y=Total_houses_sold,color='real')) + 
+        geom_line(aes(y=trend_constant_as_month_interest_trends,color='trend'))+ labs(title = "Total Number of Second Hand House Sales", x = "Time", y = "Sales")+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
++ As can be seen from the chart above, trend and actual values seem closer to each other. Better explanation can be done by examining residuals.
+
+```{r}
+checkresiduals(ts_reg, lag=12)
+```
+
++ Residuals seems the satisfy zero mean and constant variance assumption until 2018. After that there are still fluctuations that the model cannot explain.
+
++ In autocorrelation plot, it is shown that there is high correlation for lag equals to one. I will try to reduce it by adding the 1 step lagged residuals in my regression model. 
+
++ Moreover, according to Breusch-Godfrey test p-value so small. So the null hypothesis which is there are not any serial correlation should be rejected. Therefore, serial corraletion is observed between residuals.
+
+### Lag Operations
+
+```{r}
+housedata[, residuals:=residuals(ts_reg)]
+housedata[, lag1:=shift(residuals(ts_reg),1)]
+
+ts_reg=lm(Total_houses_sold~trend+mon+interestr+google_trends+lag1,housedata)
+summary(ts_reg)
+```
+
++ As seen from the regression summary, the model's R-squared value increased, the p-value decreased. lag1 has high significance. The model has become more meaningful. 
+
+
+```{r}
+housedata[,trend_constant_as_month_interest_trends_lag1:=predict(ts_reg,housedata)]
+
+ggplot(housedata ,aes(x=Date)) +
+        geom_line(aes(y=Total_houses_sold,color='real')) + 
+        geom_line(aes(y=trend_constant_as_month_interest_trends_lag1,color='trend'))+ labs(title = "Total Number of Second Hand House Sales", x = "Time", y = "Sales")+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
++ Adding lag 1 made the regression fits better, so that the error made by the model in the previous step does not affect the next one.
+
++ Now examining residuals can give a more plausible interpretation of the model.
+
+
+```{r}
+checkresiduals(ts_reg, lag=12)
+```
+
++ Now residuals satisfy the 0 mean assumption, and the variance appears to have been constant until recent years and then increased.
+
++ Autocorrelation with respect to lags mostly appears in between the confidence interval.Correlation between residuals decreased significantly.
+
++ In addition, according to Breusch-Godfrey test p-value increased compared to model without lag 1 information. But still it is small value to fail to reject null hypothesis
+
+
+```{r}
+housedata %>%
+  ggplot(aes(x=trend_constant_as_month_interest_trends_lag1, y=Total_houses_sold)) + 
+  geom_point()+
+geom_abline(slope=1, intercept=0)+labs( x = "Prediction", y = "Actual")+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+
+```
+
++ Graph above, shows the relation between actual versus predicted total number of house sales. Despite I could not get rid of the outlive points, the model seems to have made progress compared to the starting point.
+
+### Correlation Analysis
+
+```{r}
+require(GGally)
+ggpairs(housedata, columns = 2:8)
+```
++ Before I forecast, I reviewed the correlation graph of the data I used for one last time. While Google trends data show high correlation as expected, there seems to be a low negative correlation in the interest rate, which I think will be the most effective when setting up the model.
+
++ Unit prices for different cities also highly correlated but that is not in our scope.
+
+## Forecast
+
+```{r}
+housedata=rbind(housedata, data.table(Date = as.Date("2021-04-01")),fill=T )
+housedata[,trend:=1:.N]
+```
+
+
+
+```{r}
+Model<- arima(housedata$trend_constant_as_month_interest_trends_lag1, c(1,0,0))
+Forecast_arima<- predict(Model,n.ahead=1)$pred
+Forecasted_Values<- as.data.frame(Forecast_arima)
+
+```
+
+
+
+
+```{r}
+Forecasted_Values<-unlist(Forecasted_Values)
+Forecasted_Values<-as.numeric(Forecasted_Values)
+housedata[100,18]<-Forecasted_Values[1]
+
+```
+
+
+
+```{r}
+ggplot(housedata ,aes(x=Date)) +
+        geom_line(aes(y=Total_houses_sold,color='real')) + 
+        geom_line(aes(y=trend_constant_as_month_interest_trends_lag1,color='trend'))+ geom_point(aes(y=trend_constant_as_month_interest_trends_lag1), color = "blue", size = 1) + geom_point(aes(y=Total_houses_sold), color = "red", size = 1) + labs(title = "Total Number of Second Hand House Sales", x = "Time", y = "Sales")+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
++ Trend plot shows the predictions included one period ahead forecast. Although the last known data is the most important data when predicting the future, unfortunately, this does not seem to have an effect on the model. Therefore, although house sales have been on an upward trend in the last few months, the model predicted that it will decline.
+
++ Predicted value for April 2021 total second hand house sales is 65451.
+
+### References
+
+[TUİK](https://data.tuik.gov.tr/Bulten/Index?p=Turizm-Istatistikleri-I.-Ceyrek:-Ocak---Mart,-2019-30600)  [EVDS](https://evds2.tcmb.gov.tr/index.php?/evds/serieMarket)
+[Google Trends](https://trends.google.com/trends/explore?date=2012-01-01%202020-12-31&q=Holiday%20in%20Turkey,Turkey%20hotels)
+[TCMB](https://www.tcmb.gov.tr/wps/wcm/connect/TR/TCMB+TR/Main+Menu/Istatistikler/Enflasyon+Verileri/Tuketici+Fiyatlari)
