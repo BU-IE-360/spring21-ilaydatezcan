@@ -295,6 +295,7 @@ geom_abline(slope=1, intercept=0)+labs( x = "Prediction", y = "Actual")+
 require(GGally)
 ggpairs(housedata, columns = 2:8)
 ```
+
 + Before I forecast, I reviewed the correlation graph of the data I used for one last time. While Google trends data show high correlation as expected, there seems to be a low negative correlation in the interest rate, which I think will be the most effective when setting up the model.
 
 + Unit prices for different cities also highly correlated but that is not in our scope.
