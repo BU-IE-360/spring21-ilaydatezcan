@@ -1,0 +1,532 @@
+---
+title: "Homework 3"
+author: "İlayda Tezcan"
+date: "06.06.2021"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    number_sections: yes
+    code_folding: show
+    theme: sandstone
+---
+
+# Turkey's Electricity Consumption
+
+In this assignment, hourly electricity consumption in MwH of Turkey between 1 January 2016 and 5 May 2021 was examined.The data were analyzed by creating time series such as daily and weekly with the averages of the hourly data obtained from the [EPİAŞ](https://seffaflik.epias.com.tr/transparency/tuketim/gerceklesen-tuketim/gercek-zamanli-tuketim.xhtml) website.The aim of the assignment is to predict 14 days between May 6, 2021 and May 19, 2021 by building a model from this data. The success rate of the established model will also be measured by comparing it with the actual data values ​​of those days.
+
+Electricity consumption data may require some adjustments to achieve stationarity . The manner forecasts are formed determines the value of stationarity. Because regressions are commonly used in forecasting and stationarity is a prerequisite for utilizing regression, the data should be made as stationary as possible. Ljung-Box and KPSS tests can be used to determine stationarity.
+
+## Data Manipulation and Visualization 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(readr)
+library(ggplot2)
+library(skimr)
+require(readxl)
+require(data.table)
+require(zoo)
+require(xts)
+library(data.table)
+library(lubridate)
+require(forecast)
+library(urca)
+
+```
+
+
+```{r}
+
+electricity_consumption <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/electricity_consumption.csv", header=TRUE, sep = ";")
+
+str(electricity_consumption)
+
+electricity_consumption$Date<-paste(electricity_consumption$Tarih,electricity_consumption$Saat)
+
+electricity_consumption$Tarih <- as.Date(electricity_consumption$Tarih, format = "%d.%m.%Y")
+
+ggplot(data=electricity_consumption,aes(x=Tarih,y=Consumption)) +  geom_line() +
+   labs(title = "Electricity Consumption", 
+       x = "Time",
+       y = "Consumption"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+```
+
+In order to obtain a time series, necessary manipulations were made on the data. The chart above shows a visualized version of the data. Looking at the graph, we can say that the variance is a constant and increasing trend. Even if there are outlier points, seasonality is visible.
+
+## Model Selection
+
+### Hourly Electricity Consumption
+
+```{r}
+
+electric_consumption_Hourly_xts<-xts(electricity_consumption$Consumption,
+                               order.by=as.Date(electricity_consumption$Date,"%d.%m.%Y %H:%M"))
+
+electric_consumption_Hourly_ts<-ts(electric_consumption_Hourly_xts,start=c(2016,1),freq=24)
+
+ts.plot(electric_consumption_Hourly_ts,main="Hourly Electric Consumption")
+
+acf(electric_consumption_Hourly_ts)
+
+```
+
+XTS objects are used to translate time-based data into various forms while keeping the original standards. According to the ACF graph, there is high correlation at lag 24, which makes sense given that the same hour of the day has a correlation throughout the time period.
+
+
+```{r pressure, echo=FALSE}
+
+electric_consumption_Hourly_multiplicative<-decompose(electric_consumption_Hourly_ts,type="multiplicative")
+
+plot(electric_consumption_Hourly_multiplicative)
+
+electric_consumption_Hourly_Additive<-decompose(electric_consumption_Hourly_ts,type="additive")
+
+plot(electric_consumption_Hourly_Additive)
+
+```
+
+The trend, seasonal and random graphs, which are formed when decomposed as additive and multiplicative, are shown above. In order to understand which model is better, the method to be used in the continuation of the study can be decided by applying specific  tests that can measure stationarity for random part.
+
+```{r}
+
+test1=ur.kpss(electric_consumption_Hourly_multiplicative$random, use.lag="24")
+
+summary(test1)
+
+test2=ur.kpss(electric_consumption_Hourly_Additive$random, use.lag="24")
+
+summary(test2)
+
+```
+
+The test-statistic is smaller than the crucial value, indicating that we are unable to reject the null hypothesis. As a result, we can conclude the random data which is obtain by additive decomposing is stationary.
+
+### Daily Electricity Consumption
+
+```{r}
+daily<-endpoints(electric_consumption_Hourly_xts,on="days")
+
+electric_consumption_Daily_xts<-period.apply(electric_consumption_Hourly_xts,INDEX=daily,FUN=mean)
+
+```
+
+The average daily consumption was reached by taking the average of the hourly consumption amounts found on the same day in the data.
+
+```{r}
+electric_consumption_Daily_ts<-ts(electric_consumption_Daily_xts,start=c(2016,1),freq=7)
+
+ts.plot(electric_consumption_Daily_ts,main="Daily Electric Consumption")
+
+acf(electric_consumption_Daily_ts, lag.max = 10)
+```
+
+Because now daily data is obtained, we must base our new observations on the number of days in a year; hence, frequency is set to 7 when converting to a time series object. Since we are asserting that the value of today's consumption will be identical to that of next week's consumption on the same day.
+
+```{r}
+
+electric_consumption_Daily_Additive<-decompose(electric_consumption_Daily_ts,type="additive")
+
+plot(electric_consumption_Daily_Additive)
+
+```
+
+After decomposing the daily data, the KPSS test result will be checked to find the stationarity information of the random.
+
+```{r}
+
+test3=ur.kpss(electric_consumption_Daily_Additive$random, use.lag="7")
+
+summary(test3)
+
+```
+
+Test shows that data is stationary.
+
+### Weekly Electricity Consumption
+
+```{r}
+weekly<-endpoints(electric_consumption_Hourly_xts,on="weeks")
+
+electric_consumption_Weekly_xts<-period.apply(electric_consumption_Hourly_xts,INDEX=weekly,FUN=mean)
+```
+
+The average weekly consumption was reached by taking the average of the hourly consumption amounts found on the same week in the data.
+
+```{r}
+electric_consumption_Weekly_ts<-ts(electric_consumption_Weekly_xts,start=c(2016,1),freq=52)
+```
+
+We must base our new observations on the number of weeks in a year; hence, frequency is set to 52 when converting to a time series object.
+
+```{r}
+ts.plot(electric_consumption_Weekly_ts,main="Weekly Electric Consumption")
+
+acf(electric_consumption_Weekly_ts, lag.max = 60)
+```
+
+ACF function is significantly reduced compared to hourly and daily graph, due to the fact that we considered week effect with this model.
+
+```{r}
+electric_consumption_Weekly_Additive<-decompose(electric_consumption_Weekly_ts,type="additive")
+
+plot(electric_consumption_Weekly_Additive)
+```
+
+It can be said that the random part of the data decomposed with 52 frequencies no longer resembles the white noise series because by taking average of every weeks data reduced the data points on graph. Hence, applying test for check stationarity wil be reasonable.
+
+```{r}
+
+Box.test(electric_consumption_Weekly_Additive$random, lag=52, type="Ljung-Box")
+
+test4=ur.kpss(electric_consumption_Weekly_Additive$random, use.lag="52")
+
+summary(test4)
+
+```
+
+According to Ljunc Box test small p value refers to data is not stationary. On  the contrary KPSS test shows that data is stationary according to having smaller test-statistic than critical values.
+
+### Monthly Electricity Consumption
+
+```{r}
+monthly<-endpoints(electric_consumption_Hourly_xts,on="months")
+
+electric_consumption_Monthly_xts<-period.apply(electric_consumption_Hourly_xts,INDEX=monthly,FUN=mean)
+
+```
+
+The average monthly consumption was calculated by averaging the hourly consumption levels in the data for the same month.
+
+```{r}
+
+electric_consumption_monthly_ts<-ts(electric_consumption_Monthly_xts,start=c(2016,1),freq=12)
+
+ts.plot(electric_consumption_monthly_ts,main="Monthly Electric Consumption")
+
+acf(electric_consumption_monthly_ts)
+
+```
+
+When transforming to a time series object, frequency equals 12 because there are 12 observations each year on average.ACF graphs shows significant decrease on autocorrelation levels. Nevertheless taking average of 1 month long hourly consumption may mislead for hourly predictions.
+
+```{r}
+
+electric_consumption_monthly_Additive<-decompose(electric_consumption_monthly_ts,type="additive")
+
+plot(electric_consumption_monthly_Additive)
+
+```
+
+Random part does not resemble white noise series at all.
+
+```{r}
+
+Box.test(electric_consumption_monthly_Additive$random, type="Ljung-Box")
+
+test5=ur.kpss(electric_consumption_monthly_Additive$random, use.lag="12")
+
+summary(test5)
+
+```
+
+Both tests show that random part of monthly data is stationary.
+
+## Decomposition
+
+Because our initial goal is to anticipate every hour for the next 14 days using the data we have, we must first transform it into a format that allows us to properly create a model. As far as we can tell, the data set is not stationary, which makes forecasting difficult. To make the data stationary, we must first bring it to a stationary condition where the mean and variance do not vary.
+
+```{r}
+
+electric_consumption_168<-ts(electric_consumption_Hourly_xts,start=c(2016,1),frequency =168)
+
+length(electric_consumption_168)
+
+```
+
+We can see from the breakdown graphs that we have seasonality on both hours and days, therefore we have a total of 24*7=168 hours of repetition.  In the past 24 hours and 7 days, we've witnessed a definite pattern and a reversal to earlier levels. As a result, we'll employ a model that includes both of these patterns at the same time.
+
+```{r}
+ts.plot(electric_consumption_168,main="Electric Consumption (freq=168)" )
+
+acf(electric_consumption_168,main="ACF for Electric Consumption (freq=168)", lag.max = 200)
+```
+
+The trend and seasonality are visible. As a result, these trends and seasonality will be removed to create a stationary time series before forecasting. The additive approach will be studied because it has proven to be the best option and suit.
+
+```{r}
+electric_consumption_168_additive<-decompose(electric_consumption_168,type="additive")
+
+plot(electric_consumption_168_additive)
+```
+
+
+```{r}
+
+test6=ur.kpss(electric_consumption_168_additive$random, use.lag="168")
+
+summary(test6)
+
+```
+
+The test-statistic is smaller than the crucial value, indicating that we are unable to reject the null hypothesis. As a result, we can conclude the random data is stationary and begin time series modeling.
+
+Working with various seasonality is tough, thus we need to create a model that deseasonlizes and detrends the hourly series with a frequency of 168.
+
+```{r}
+detrended<-electric_consumption_168-electric_consumption_168_additive$trend
+
+plot(detrended)
+
+acf(detrended, lag.max = 200, na.action = na.pass)
+```
+
+ACF seems to be reduced, but to be sure, you need to remove seasonality.
+
+```{r}
+decomposed<-detrended-electric_consumption_168_additive$seasonal
+
+plot(decomposed)
+
+acf(decomposed, lag.max = 200, na.action = na.pass)
+```
+
+There is more decrease in ACF graph. Because we haven't removed monthly or yearly seasonality and trend, ACF still indicates little seasonality and trend. Moreover, we've gone as far as we can without differencing the data on lags to eliminate seasonality and trend. This will not be done because it would complicate the arima method of predicting which is outside the topic of this report.To check the result, KPSS test will be applied. 
+
+```{r}
+test2=ur.kpss(electric_consumption_168_additive$random)
+
+summary(test2)
+```
+
+The test-statistic is smaller than the crucial value, indicating that we are unable to reject the null hypothesis. As a result, we can conclude the data is stationary and begin time series modeling.
+
+
+## Building ARMA Model
+
+### AR Models
+
+```{r}
+
+armodel1 <- arima(decomposed, order=c(1,0,0))
+AIC(armodel1)
+BIC(armodel1)
+
+armodel2 <- arima(decomposed, order=c(2,0,0))
+AIC(armodel2)
+BIC(armodel2)
+
+armodel3 <- arima(decomposed, order=c(3,0,0))
+AIC(armodel3)
+BIC(armodel3)
+
+armodel4 <- arima(decomposed, order=c(4,0,0))
+AIC(armodel4)
+BIC(armodel4)
+
+armodel5 <- arima(decomposed, order=c(5,0,0))
+AIC(armodel5)
+BIC(armodel5)
+```
+Different AR models applied the to the data that is gathered in a stationary.In terms of AIC and BIC 4 is minimum, so p parameter for auto regression model is 4.
+
+### MA Models
+
+```{r}
+mamodel1 <- arima(decomposed, order=c(0,0,1))
+AIC(mamodel1)
+BIC(mamodel1)
+
+mamodel2 <- arima(decomposed, order=c(0,0,2))
+AIC(mamodel2)
+BIC(mamodel2)
+
+mamodel3 <- arima(decomposed, order=c(0,0,3))
+AIC(mamodel3)
+BIC(mamodel3)
+
+mamodel4 <- arima(decomposed, order=c(0,0,4))
+AIC(mamodel4)
+BIC(mamodel4)
+
+mamodel5 <- arima(decomposed, order=c(0,0,5))
+AIC(mamodel5)
+BIC(mamodel5)
+
+
+```
+
+Moreover, different MA models applied the to the same data.In terms of AIC and BIC 5 is minimum, so q parameter for moving average model is 5.
+
+### ARMA Model
+
+```{r}
+armamodel <- arima(decomposed, order=c(4,0,5))
+print(armamodel)
+AIC(armamodel)
+BIC(armamodel)
+armamodel$coef
+```
+
+The ARMA model was determined according to the AR and MA models that gave the best AIC results, as seen above.
+
+```{r}
+
+model_fitted <- decomposed - residuals(armamodel)
+
+plot(decomposed) + points(model_fitted, type = "l", col ='red')
+
+```
+
+Residuals that is calculated according to the ARMA model removed from detrended and deseasonalized (random part) data.Plot above shows random part and fitted values in same graph. Closer look to the graph can be seen below.
+
+```{r}
+
+plot(decomposed[4000:4200], type="l") + points(model_fitted[4000:4200], type = "l", col = 'red')
+
+```
+
+
+```{r}
+
+model_fitted_transformed <- model_fitted + as.numeric(electric_consumption_168_additive$trend) + electric_consumption_168_additive$seasonal
+
+model_fitted_transformed_ts<-ts(model_fitted_transformed,start=c(2016,1),frequency =168)
+
+electricity_consumption$fitted<-paste(model_fitted_transformed_ts)
+
+electricity_consumption$fitted <- as.numeric(electricity_consumption$fitted)
+
+```
+
+Fitted consumption values are found by adding the previously determined trend and seasonal coefficients to the random part found according to the result of the ARMA model. The founded fitted consumption values are pasted into the same data by adding a new column and necessary data manipulations are made.
+
+```{r}
+
+ggplot(electricity_consumption ,aes(x=Tarih)) +
+        geom_line(aes(y=Consumption,color='actual')) + 
+        geom_line(aes(y=fitted,color='fitted')) + labs(title = "Consumption Actual vs Fitted", 
+       x = "Time",
+       y = "Consumption"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Graph above shows the actual electricity consumption and fitted values. Looking at a shorter date range can give us an idea of how well our model fits.
+
+```{r}
+plot(electricity_consumption$Consumption[4000:4200], type="l")+points(electricity_consumption$fitted[4000:4200], type = "l", col = 'red')
+```
+
+As can be seen from the graph, the model we built seems to fit the existing data.
+
+## Forecast
+
+```{r}
+
+forecasted <- predict(armamodel, n.ahead = 336)$pred
+
+forecasted_se<-predict(armamodel, n.ahead = 336)$se
+```
+
+
+Since 14 days ahead should be hourly forecasted, 24*14=336 new time point should be predicted.
+
+```{r}
+last_trend_value <-tail(electric_consumption_168_additive$trend[!is.na(electric_consumption_168_additive$trend)],1)
+print(last_trend_value)
+
+```
+
+Last trend value will be used for further predictions.
+
+```{r}
+
+seasonality=electric_consumption_168_additive$seasonal[145:480]
+
+```
+
+Seasonality coefficient repeats every 168. When the mode of the data consisting of 46848 observations is taken according to 168, it is found that the 144th seasonality coefficient is used at last data point. Therefore, the seasonality coefficient for predictions should start from 145 and go forward 336 data points.
+
+```{r}
+actual_data <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/actual_data.csv", header=TRUE, sep = ";")
+
+actual_data$seasonality<-paste(seasonality)
+actual_data$trend<-paste(last_trend_value)
+actual_data$forcasted_error<-paste(forecasted)
+
+forcasted_values=as.numeric(actual_data$seasonality)+as.numeric(actual_data$trend)+as.numeric(actual_data$forcasted_error)
+
+actual_data$forcasted_values<-paste(forcasted_values)
+
+actual_data$Tarih <- as.Date(actual_data$Tarih, format = "%d.%m.%Y")
+actual_data$forcasted_values <- as.numeric(actual_data$forcasted_values)
+
+```
+
+After reading the actual values of the data we predicted, seasonality, trend and forecasted errors in the previous steps were added by opening separate columns.Necessary data manipulations are made.
+
+
+```{r}
+
+plot(actual_data$Consumption, type="l")+points(actual_data$forcasted_values, type = "l", col = 'red')
+```
+
+
+Plot above shows actual and predicted values for 14 days.It's clear that our predictions don't always fit up with actual values. Although it captures the majority of patterns and levels, it also exhibits a number of unexpected behaviors. ARIMA models can better explain deviations by differencing, however our goal in this assignment is to create an ARMA model.
+
+
+## Error Evaluation
+
+```{r}
+
+actual_data$error<-paste(actual_data$Consumption-actual_data$forcasted_values)
+
+actual_data$error<-as.numeric(actual_data$error)
+
+actual_data$abserror<-paste(abs(actual_data$error))
+
+actual_data$abserror<-as.numeric(actual_data$abserror)
+
+actual_data$abspererror<-paste(actual_data$abserror/actual_data$Consumption)
+
+actual_data$abspererror<-as.numeric(actual_data$abspererror)
+
+actual_data$bias <- paste(actual_data$error/actual_data$Consumption)
+
+actual_data$bias<-as.numeric(actual_data$bias)
+
+n=length(actual_data$Consumption)
+
+MAPE=sum(actual_data$abserror/actual_data$Consumption)/n
+
+MAD= sum(actual_data$abserror)/n
+
+WMAPE= MAD/mean(actual_data$Consumption)
+
+actual_data<-data.table(actual_data)
+
+
+```
+
+Necessary calculations are made for evaluating the model.
+
+```{r}
+Errors = actual_data[, list(RealConsumption=mean(Consumption, na.rm=TRUE), Forecast=mean(forcasted_values, na.rm=TRUE), dailybias=mean(bias, na.rm=TRUE),dailymape=mean(abspererror, na.rm=TRUE)), by=list(as.Date(Tarih))]
+
+Errors
+```
+
+According to daily bias best fitted day is day 2 and worst is day 8.
+
+The goal of this task was to create a time series model using as many stationary series as possible. Constant variance and mean were obtained for this aim. Then, using two distinct methodologies, the best ARMA model was attempted to be obtained.The best two models from this part were used to estimate the consumption values for the 14-day test period.

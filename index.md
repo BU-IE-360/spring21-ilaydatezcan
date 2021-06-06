@@ -13,3 +13,7 @@
 ## Homework 2 (May 7)
 
 >[Here](files/hw2.html) is my one month forecast model regarding second hand house sales.
+
+## Homework 3 (June 6)
+
+>[Here](files/hw3.html) is my forecast study for electricity consumption.
