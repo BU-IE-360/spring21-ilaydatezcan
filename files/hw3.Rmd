@@ -9,12 +9,12 @@ output:
     toc_float: yes
     number_sections: yes
     code_folding: show
-    theme: sandstone
+    theme: cerulean
 ---
 
 # Turkey's Electricity Consumption
 
-In this assignment, hourly electricity consumption in MwH of Turkey between 1 January 2016 and 5 May 2021 was examined.The data were analyzed by creating time series such as daily and weekly with the averages of the hourly data obtained from the [EPİAŞ](https://seffaflik.epias.com.tr/transparency/tuketim/gerceklesen-tuketim/gercek-zamanli-tuketim.xhtml) website.The aim of the assignment is to predict 14 days between May 6, 2021 and May 19, 2021 by building a model from this data. The success rate of the established model will also be measured by comparing it with the actual data values ​​of those days.
+In this assignment, hourly electricity consumption in MwH of Turkey between 1 January 2016 and 5 May 2021 was examined.The data were analyzed by creating time series such as daily and weekly with the averages of the hourly data obtained from the [EPİAŞ](https://seffaflik.epias.com.tr/transparency/tuketim/gerceklesen-tuketim/gercek-zamanli-tuketim.xhtml) website.The aim of the assignment is to predict 14 days between May 6, 2021 and May 19, 2021 by building a model from this data. The success rate of the established model will also be measured by comparing it with the actual data values of those days.
 
 Electricity consumption data may require some adjustments to achieve stationarity . The manner forecasts are formed determines the value of stationarity. Because regressions are commonly used in forecasting and stationarity is a prerequisite for utilizing regression, the data should be made as stationary as possible. Ljung-Box and KPSS tests can be used to determine stationarity.
 
@@ -527,6 +527,8 @@ Errors = actual_data[, list(RealConsumption=mean(Consumption, na.rm=TRUE), Forec
 Errors
 ```
 
-According to daily bias best fitted day is day 2 and worst is day 8.
+According to daily bias best fitted day is day 2 and worst is day 8. As daily mape, day 13 is best and again day 8 is worst predicted. It can be said that our model does not explain day 8's electricity consumption.
 
-The goal of this task was to create a time series model using as many stationary series as possible. Constant variance and mean were obtained for this aim. Then, using two distinct methodologies, the best ARMA model was attempted to be obtained.The best two models from this part were used to estimate the consumption values for the 14-day test period.
+## Conclusion
+
+The goal of this task was to create a time series model using as many stationary series as possible. To achieve this various types of seasonality were investigated. Constant variance and mean were obtained for this aim. Then, using two distinct methodologies, the best ARMA model was attempted to be obtained.The best two models from this part were used to estimate the consumption values for the 14-day test period.
