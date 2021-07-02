@@ -1,0 +1,1744 @@
+---
+title: "IE 360 Homework 4 & 5"
+author: "İlayda Tezcan Tolga Erdoğan Tolgahan İskender"
+output:
+  html_document:
+    code_folding: show
+    toc: yes
+    toc_float: yes
+---
+
+
+# Introduction
+
+The purpose of this task is to come up with various forecasting techniques for our term project. Initially, seasonality will be analyzed for each product according to seasonality series will be decomposed. Unfortunately, due to lack of data only daily decomposition can be applied. The reason behind such problem is Trendyol does not share data before May 2020, which causes weekly and monthly decomposition not to be made. Based on decomposition for each product, proper ARIMA models will be build. Then, possible regressor analysis will made for each product according to relations with sold count. ARIMAX models will build with specified regressors to reach better forecast values. 
+
+```{r include=FALSE}
+require(jsonlite)
+require(httr)
+require(data.table)
+
+get_token <- function(username, password, url_site){
+  
+  post_body = list(username=username,password=password)
+  post_url_string = paste0(url_site,'/token/')
+  result = POST(post_url_string, body = post_body)
+  
+  # error handling (wrong credentials)
+  if(result$status_code==400){
+    print('Check your credentials')
+    return(0)
+  }
+  else if (result$status_code==201){
+    output = content(result)
+    token = output$key
+  }
+  
+  return(token)
+}
+
+get_data <- function(start_date='2020-03-20', token, url_site){
+  
+  post_body = list(start_date=start_date,username=username,password=password)
+  post_url_string = paste0(url_site,'/dataset/')
+  
+  header = add_headers(c(Authorization=paste('Token',token,sep=' ')))
+  result = GET(post_url_string, header, body = post_body)
+  output = content(result)
+  data = data.table::rbindlist(output)
+  data[,event_date:=as.Date(event_date)]
+  data = data[order(product_content_id,event_date)]
+  return(data)
+}
+
+
+send_submission <- function(predictions, token, url_site, submit_now=F){
+  
+  format_check=check_format(predictions)
+  if(!format_check){
+    return(FALSE)
+  }
+  
+  post_string="list("
+  for(i in 1:nrow(predictions)){
+    post_string=sprintf("%s'%s'=%s",post_string,predictions$product_content_id[i],predictions$forecast[i])
+    if(i<nrow(predictions)){
+      post_string=sprintf("%s,",post_string)
+    } else {
+      post_string=sprintf("%s)",post_string)
+    }
+  }
+  
+  submission = eval(parse(text=post_string))
+  json_body = jsonlite::toJSON(submission, auto_unbox = TRUE)
+  submission=list(submission=json_body)
+  
+  print(submission)
+  # {"31515569":2.4,"32737302":2.4,"32939029":2.4,"4066298":2.4,"48740784":2.4,"6676673":2.4, "7061886":2.4, "73318567":2.4, "85004":2.4} 
+  
+  if(!submit_now){
+    print("You did not submit.")
+    return(FALSE)      
+  }
+  
+  
+  header = add_headers(c(Authorization=paste('Token',token,sep=' ')))
+  post_url_string = paste0(url_site,'/submission/')
+  result = POST(post_url_string, header, body=submission)
+  
+  if (result$status_code==201){
+    print("Successfully submitted. Below you can see the details of your submission")
+  } else {
+    print("Could not submit. Please check the error message below, contact the assistant if needed.")
+  }
+  
+  print(content(result))
+  
+}
+
+check_format <- function(predictions){
+  
+  if(is.data.frame(predictions) | is.data.frame(predictions)){
+    if(all(c('product_content_id','forecast') %in% names(predictions))){
+      if(is.numeric(predictions$forecast)){
+        print("Format OK")
+        return(TRUE)
+      } else {
+        print("forecast information is not numeric")
+        return(FALSE)                
+      }
+    } else {
+      print("Wrong column names. Please provide 'product_content_id' and 'forecast' columns")
+      return(FALSE)
+    }
+    
+  } else {
+    print("Wrong format. Please provide data.frame or data.table object")
+    return(FALSE)
+  }
+  
+}
+
+error_test <- function(actual, forecasted){
+  n=length(actual)
+  error = actual-forecasted
+  mean=mean(actual)
+  sd=sd(actual)
+  bias = sum(error)/sum(actual)
+  mape = sum(abs(error/actual))/n
+  mad = sum(abs(error))/n
+  wmape = mad/mean
+  MPE = sum(error/actual)/n
+  df = data.frame(n,mean,sd,bias,mape,mad,wmape,MPE)
+  return(df)
+}
+
+# this part is main code
+subm_url = 'http://46.101.163.177'
+
+u_name = "Group16"
+p_word = "gBYJop18sJJOwsvk"
+submit_now = FALSE
+
+username = u_name
+password = p_word
+
+token = get_token(username=u_name, password=p_word, url=subm_url)
+data = get_data(token=token,url=subm_url)
+
+predictions=unique(data[,list(product_content_id)])
+predictions[,forecast:=2.3]
+
+send_submission(predictions, token, url=subm_url, submit_now=F)
+
+```
+
+
+Required libraries and data manipulations
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(caTools)
+library(xts)
+library(zoo)
+library(forecast)
+library(urca)
+library(ggplot2)
+
+
+data[, is.discount_days:= 0]
+rawdata <- read.csv("C:/Users/İlayda Tezcan/Documents/GitHub/spring21-ilaydatezcan/files/ProjectRawData.csv", header=TRUE, sep = ";")
+rawdata$event_date <- as.Date(rawdata$event_date , format = "%d.%m.%Y")
+alldata<-rbind(rawdata,data)
+alldata<-as.data.table(alldata)
+alldata$is.discount_days[alldata$event_date=="2021-03-08"] <- 1
+alldata$is.discount_days[alldata$event_date=="2021-03-09"] <- 1
+alldata$is.discount_days[alldata$event_date=="2021-03-10"] <- 1
+alldata$is.discount_days[alldata$event_date=="2021-03-11"] <- 1
+alldata$is.discount_days[alldata$event_date=="2021-03-12"] <- 1
+
+# Some of the other discount days are set to 1 in ProjectRawData.csv
+
+n<-400
+dates<- seq(as.Date("2020-05-25"), length = n, by = "days")
+#validation_dates<-seq(as.Date("2021-03-01"), length = n-280, by = "days")
+
+```
+
+# Xiaomi Bluetooth Earphone 
+
+## Decomposition
+
+```{r}
+earphone<-subset(alldata, alldata$product_content_id==6676673)
+earphone_daily_tr<-earphone[earphone$event_date<"2021-06-21"]
+earphone_daily_te<-earphone[earphone$event_date>="2021-06-21"]
+plot(earphone_daily_tr$sold_count, type ='l')
+```
+
+Plot above shows sold counts of Xiaomi Bluetooth Earphone, which has no visible trend over time and variance seems constant, although there are outlier points.
+
+```{r}
+earphone_ts_daily<-ts(earphone_daily_tr$sold_count, freq=7)
+tsdisplay(earphone_ts_daily)
+```
+
+Necessary data manipulations are made in order to obtain daily data. ACF plot shows decreasing significant correlation until lag 8 and PACF shows only significant correlation at lag 1. It will be examined further after decomposition. 
+
+
+```{r}
+earphone_daily_additive<-decompose(earphone_ts_daily, type ="additive")
+earphone_daily_multiplicative<-decompose(earphone_ts_daily, type ="multiplicative")
+plot(earphone_daily_additive)
+plot(earphone_daily_multiplicative)
+```
+
+For additive decomposition random part has less variance compared to multiplicative approach. Also, multiplicative decomposition random part's variance changes over time. For both model has zero mean for random part.
+
+In order to understand which model is better, the method to be used in the continuation of the study can be decided by applying specific tests that can measure stationarity for random part.
+
+```{r}
+test11=ur.kpss(earphone_daily_additive$random, use.lag="7")
+summary(test11)
+test12=ur.kpss(earphone_daily_multiplicative$random, use.lag="7")
+summary(test12)
+```
+
+Additive decomposition gives more stationary random part compared to multiplicative according value of test statisctic and critical values. Hence, additive is chosen for further examinations.
+
+```{r}
+plot(earphone_daily_additive$seasonal[1:30], type='l')
+plot(earphone_daily_additive$trend, type='l')
+```
+
+
+Plots above show closer looks for trend and seasonal components of additive decomposition .
+
+Since there are not enough data points, decomposition cannot made different levels. Altough we cannot decompose, weekly and monthly plots can be seen below.
+
+
+```{r}
+earphone_xts<-xts(earphone_daily_tr$sold_count, order.by=as.Date(earphone_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(earphone_xts,on="weeks")
+earphone_xts_weekly<-period.apply(earphone_xts,INDEX=weekly,FUN=mean)
+plot(earphone_xts_weekly)
+```
+
+```{r}
+monthly<-endpoints(earphone_xts,on="months")
+earphone_xts_monthly<-period.apply(earphone_xts,INDEX=monthly,FUN=mean)
+plot(earphone_xts_monthly)
+```
+
+Weekly and monthly plots does not show any significant pattern or trend. If we had more data points, maybe a more meaningful result could be reached from these graphs.
+
+## ARIMA Model
+
+```{r}
+tsdisplay(earphone_daily_additive$random, na.action = na.omit)
+```
+
+According to ACF plot, there is significant negative correlation at lag 3. Hence, moving average parameter should be 3. Also, it can be seen from PACF plot that correlation significantly decreased after lag 3 which means that AR parameter should be 3.
+
+```{r}
+earphone_model<-arima(earphone_daily_additive$random, order = c(3,0,3))
+AIC(earphone_model)
+earphone_model2<-arima(earphone_daily_additive$random, order = c(3,0,2))
+AIC(earphone_model2)
+earphone_model3<-arima(earphone_daily_additive$random, order = c(2,0,2))
+AIC(earphone_model3)
+```
+
+When adjacent parameters also checked, model 2 which has (3,0,2) parameters is better in terms of AIC values, therefore it is chosen.
+
+Fitting the model
+
+```{r}
+model_forecast_error <- predict(earphone_model2, n.ahead = 11)$pred
+last_trend_value <-tail(earphone_daily_additive$trend[!is.na(earphone_daily_additive$trend)],1)
+seasonality=earphone_daily_additive$seasonal[295:305]
+earphone_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+earphone_daily_te$forecast<-paste(earphone_arima_forecast)
+earphone_daily_te$forecast<-as.numeric(earphone_daily_te$forecast)
+
+
+ggplot(earphone_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Plot above shows for 10 days actual and predicted values with ARIMA model that we built on decomposed random part.
+Model that we built with ARIMA (3,0,2) parameters does not explain why earphone is not sold lately.
+
+
+```{r}
+error_test(earphone_daily_te$sold_count,earphone_daily_te$forecast)
+```
+
+WMAPE is 68% which is too much. ARIMA model clearly overpredicts the sales volume. This is mainly due to the constant trend assumption made. 
+
+## Regressor Search
+
+```{r}
+earphone_lm1<-lm(sold_count~visit_count+is.discount_days, data=earphone_daily_tr)
+summary(earphone_lm1)
+earphone_lm2<-lm(sold_count~category_sold+price, data=earphone_daily_tr)
+summary(earphone_lm2)
+earphone_lm3<-lm(sold_count~price+favored_count+category_sold, data=earphone_daily_tr)
+summary(earphone_lm3)
+earphone_lm4<-lm(sold_count~favored_count+basket_count+visit_count, data=earphone_daily_tr)
+summary(earphone_lm4)
+
+earphone_daily_te$forecastlm1<-predict(earphone_lm1,earphone_daily_te)
+earphone_daily_te$forecastlm2<-predict(earphone_lm2,earphone_daily_te)
+earphone_daily_te$forecastlm3<-predict(earphone_lm3,earphone_daily_te)
+earphone_daily_te$forecastlm4<-predict(earphone_lm4,earphone_daily_te)
+
+error_test(earphone_daily_te$sold_count,earphone_daily_te$forecastlm1)
+error_test(earphone_daily_te$sold_count,earphone_daily_te$forecastlm2)
+error_test(earphone_daily_te$sold_count,earphone_daily_te$forecastlm3)
+error_test(earphone_daily_te$sold_count,earphone_daily_te$forecastlm4)
+```
+
+4 different multiple linear regression model is built to understand which regressors are explaining model better.
+In terms of adjusted R square and WMAPE 4th model is explaining sales behavior better than others. Therefore, 4th model's regressors will be chosen which are favored count, basket count and visit count.
+
+## ARIMAX Model
+
+```{r}
+earphone_xreg1<-cbind(earphone_daily_tr$favored_count,
+                  earphone_daily_tr$basket_count,
+                  earphone_daily_tr$visit_count)
+earphone_xreg2<-cbind(earphone_daily_te$favored_count,
+                  earphone_daily_te$basket_count,
+                  earphone_daily_te$visit_count)
+
+earphone_arimax<-Arima(earphone_ts_daily,xreg=as.matrix(earphone_xreg1),order=c(3,0,2))
+earphone_daily_te$forecastarimax<-forecast(earphone_arimax,xreg=as.matrix(earphone_xreg2))$mean
+error_test(earphone_daily_te$sold_count,earphone_daily_te$forecastarimax)
+```
+
+WMAPE is 0.16 which is little higher than multiple linear regression model with same regressors. Plot below shows forecasted values with ARIMAX vs actual sales.
+
+```{r}
+ggplot(earphone_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+
+```
+
+There is excessive difference forecasted values between ARIMA and ARIMAX models. As can be seen from plot above, regressors improved model incontestably.
+
+# Fakir Vacuum Cleaner 
+
+## Decomposition
+
+```{r}
+vacuum<-subset(alldata, alldata$product_content_id==7061886)
+vacuum_daily_tr<-vacuum[vacuum$event_date<"2021-06-21"]
+vacuum_daily_te<-vacuum[vacuum$event_date>="2021-06-21"]
+plot(vacuum_daily_tr$sold_count, type ='l')
+```
+
+Fakir vacuum cleaner daily  sold count plot for given days can be seen above. Sales of item has significant visible outlier points. 
+
+```{r}
+vacuum_ts_daily<-ts(vacuum_daily_tr$sold_count, freq=7)
+tsdisplay(vacuum_ts_daily)
+```
+
+Necessary data manipulations are made in order to obtain daily data. ACF plot seems like there is seasonality, also only significant PACF at lag 1.
+
+```{r}
+vacuum_daily_additive<-decompose(vacuum_ts_daily, type ="additive")
+vacuum_daily_multiplicative<-decompose(vacuum_ts_daily, type ="multiplicative")
+plot(vacuum_daily_additive)
+plot(vacuum_daily_multiplicative)
+```
+
+Additive decomposition random part yield better result in terms of variance.
+
+In order to understand which model is better, the method to be used in the continuation of the study can be decided by applying specific tests that can measure stationarity for random part.
+
+```{r}
+test13=ur.kpss(vacuum_daily_additive$random, use.lag="7")
+summary(test13)
+test14=ur.kpss(vacuum_daily_multiplicative$random, use.lag="7")
+summary(test14)
+```
+
+As expected from random part graphs, additive decomposition gave more stationary random part.
+
+
+```{r}
+plot(vacuum_daily_additive$seasonal[1:30], type='l')
+plot(vacuum_daily_additive$trend, type='l')
+```
+
+Plots above show closer looks for trend and seasonal components of additive decomposition .
+
+Since there are not enough data points, decomposition cannot made different levels. Altough we cannot decompose, weekly and monthly plots can be seen below.
+
+```{r}
+vacuum_xts<-xts(vacuum_daily_tr$sold_count, order.by=as.Date(vacuum_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(vacuum_xts,on="weeks")
+vacuum_xts_weekly<-period.apply(vacuum_xts,INDEX=weekly,FUN=mean)
+plot(vacuum_xts_weekly)
+```
+
+The peaks in November coincide with the trendyol discount days and black friday days that we determined in our project.
+
+```{r}
+monthly<-endpoints(vacuum_xts,on="months")
+vacuum_xts_monthly<-period.apply(vacuum_xts,INDEX=monthly,FUN=mean)
+plot(vacuum_xts_monthly)
+```
+
+From monthly sales data, november has highest sales which is expected due to price discounts and advertisements.
+
+## ARIMA Model
+
+```{r}
+tsdisplay(vacuum_daily_additive$random, na.action = na.omit)
+```
+
+According to ACF plot, there is significant negative correlation at lag 3. Hence, moving average parameter should be 3. Also, it can be seen from PACF plot that correlation significantly decreased after lag 1 which means that AR parameter should be 1.
+
+```{r}
+vacuum_model<-arima(vacuum_daily_additive$random, order = c(1,0,3))
+AIC(vacuum_model)
+vacuum_model2<-arima(vacuum_daily_additive$random, order = c(1,0,2))
+AIC(vacuum_model2)
+vacuum_model3<-arima(vacuum_daily_additive$random, order = c(2,0,2))
+AIC(vacuum_model3)
+```
+
+When adjacent parameters also checked, still model 1 which has (1,0,3) parameters is better in terms of AIC values, therefore it is chosen.
+
+Fitting the model
+
+```{r}
+model_forecast_error <- predict(vacuum_model, n.ahead = 11)$pred
+last_trend_value <-tail(vacuum_daily_additive$trend[!is.na(vacuum_daily_additive$trend)],1)
+seasonality=vacuum_daily_additive$seasonal[295:305]
+vacuum_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+vacuum_daily_te$forecast<-paste(vacuum_arima_forecast)
+vacuum_daily_te$forecast<-as.numeric(vacuum_daily_te$forecast)
+
+
+ggplot(vacuum_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Plot above shows for 10 days actual and predicted values with ARIMA model that we built on decomposed random part. It seems like although ARIMA model catches ups and downs on sales, it is not explaining clearly.
+
+
+```{r}
+error_test(vacuum_daily_te$sold_count,vacuum_daily_te$forecast)
+```
+
+WMAPE is 56% which is high. Whereas model catched the seasonality constant trend assumption increased the errors.
+
+## Regressor Search
+
+```{r}
+vacuum_lm1<-lm(sold_count~visit_count+is.discount_days, data=vacuum_daily_tr)
+summary(vacuum_lm1)
+vacuum_lm2<-lm(sold_count~category_sold+price, data=vacuum_daily_tr)
+summary(vacuum_lm2)
+vacuum_lm3<-lm(sold_count~price+favored_count+category_sold, data=vacuum_daily_tr)
+summary(vacuum_lm3)
+vacuum_lm4<-lm(sold_count~favored_count+basket_count+visit_count, data=vacuum_daily_tr)
+summary(vacuum_lm4)
+
+vacuum_daily_te$forecastlm1<-predict(vacuum_lm1,vacuum_daily_te)
+vacuum_daily_te$forecastlm2<-predict(vacuum_lm2,vacuum_daily_te)
+vacuum_daily_te$forecastlm3<-predict(vacuum_lm3,vacuum_daily_te)
+vacuum_daily_te$forecastlm4<-predict(vacuum_lm4,vacuum_daily_te)
+
+error_test(vacuum_daily_te$sold_count,vacuum_daily_te$forecastlm1)
+error_test(vacuum_daily_te$sold_count,vacuum_daily_te$forecastlm2)
+error_test(vacuum_daily_te$sold_count,vacuum_daily_te$forecastlm3)
+error_test(vacuum_daily_te$sold_count,vacuum_daily_te$forecastlm4)
+```
+
+4 different multiple linear regression model is built to understand which regressors are explaining model better.
+In terms of adjusted R square and WMAPE 4th model is explaining sales behavior better than others. Therefore, 4th model's regressors will be chosen which are favored count, basket count and visit count.
+
+## ARIMAX Model
+
+
+```{r}
+vacuum_xreg1<-cbind(vacuum_daily_tr$favored_count,
+                  vacuum_daily_tr$basket_count,
+                  vacuum_daily_tr$visit_count)
+vacuum_xreg2<-cbind(vacuum_daily_te$favored_count,
+                  vacuum_daily_te$basket_count,
+                  vacuum_daily_te$visit_count)
+
+vacuum_arimax<-Arima(vacuum_ts_daily,xreg=as.matrix(vacuum_xreg1),order=c(1,0,3))
+vacuum_daily_te$forecastarimax<-forecast(vacuum_arimax,xreg=as.matrix(vacuum_xreg2))$mean
+error_test(vacuum_daily_te$sold_count,vacuum_daily_te$forecastarimax)
+```
+
+WMAPE is 0.23 which is better than multiple linear regression model with same regressors. Plot below shows forecasted values with ARIMAX vs actual sales.
+
+```{r}
+ggplot(vacuum_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+
+```
+
+As can be seen from plot, actual and forecasted values are close to each other and WMAPE is low as desired. Vacuum cleaner sales count explained clearly with favored count, basket count and visit count.
+
+
+# La Roche Posey Facial Cleanser 
+
+## Decomposition
+
+```{r}
+facial_cleanser<-subset(alldata, alldata$product_content_id==85004)
+facial_cleanser_daily_tr<-facial_cleanser[facial_cleanser$event_date<"2021-06-21"]
+facial_cleanser_daily_te<-facial_cleanser[facial_cleanser$event_date>="2021-06-21"]
+plot(facial_cleanser_daily_tr$sold_count, type ='l')
+```
+
+Plot above shows daily sales of La Roche Posay face cleanser. Sales of such item increased over time and variance increased at fall and winter term.
+
+```{r}
+facial_cleanser_ts_daily<-ts(facial_cleanser_daily_tr$sold_count, freq=7)
+tsdisplay(facial_cleanser_ts_daily)
+```
+
+In order to see the daily effect in the data, a time series was created by giving frequency 7. ACF plot seems like there is seasonality, also only significant PACF at lag 1.
+
+
+```{r}
+facial_cleanser_daily_additive<-decompose(facial_cleanser_ts_daily, type ="additive")
+facial_cleanser_daily_multiplicative<-decompose(facial_cleanser_ts_daily, type ="multiplicative")
+plot(facial_cleanser_daily_additive)
+plot(facial_cleanser_daily_multiplicative)
+```
+
+Additive decomposition random part has less variance but it is not constant over time. Multiplicative decomposition random part has more variance but it is constant over time. It's hard to make a definitive statement just by looking at the charts. Therefore, necessary tests will be applied to check stationarity.
+
+```{r}
+test15=ur.kpss(facial_cleanser_daily_additive$random, use.lag="7")
+summary(test15)
+test16=ur.kpss(facial_cleanser_daily_multiplicative$random, use.lag="7")
+summary(test16)
+```
+
+Additive decomposition method should be chosen since it gives more stationary random part according to test results.
+
+```{r}
+plot(facial_cleanser_daily_additive$seasonal[1:30], type='l')
+plot(facial_cleanser_daily_additive$trend, type='l')
+```
+
+Plots above show closer looks for trend and seasonal components of additive decomposition .
+
+Since there are not enough data points, decomposition cannot made different levels. Altough we cannot decompose, weekly and monthly plots can be seen below.
+
+
+```{r}
+facial_cleanser_xts<-xts(facial_cleanser_daily_tr$sold_count, order.by=as.Date(facial_cleanser_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(facial_cleanser_xts,on="weeks")
+facial_cleanser_xts_weekly<-period.apply(facial_cleanser_xts,INDEX=weekly,FUN=mean)
+plot(facial_cleanser_xts_weekly)
+
+monthly<-endpoints(facial_cleanser_xts,on="months")
+facial_cleanser_xts_monthly<-period.apply(facial_cleanser_xts,INDEX=monthly,FUN=mean)
+plot(facial_cleanser_xts_monthly)
+```
+
+Sales in November are affected from discount days which are determined in our project to yield better forecast result.
+
+
+## ARIMA Model
+
+```{r}
+tsdisplay(facial_cleanser_daily_additive$random, na.action = na.omit)
+```
+
+According to ACF plot, there is significant negative correlation at lag 3. Hence, moving average parameter should be 3. Also, it can be seen from PACF plot that correlation significantly decreased after lag 1 which means that AR parameter should be 1.
+
+```{r}
+facial_cleanser_model<-arima(facial_cleanser_daily_additive$random, order = c(1,0,3))
+AIC(facial_cleanser_model)
+facial_cleanser_model2<-arima(facial_cleanser_daily_additive$random, order = c(1,0,2))
+AIC(facial_cleanser_model2)
+facial_cleanser_model3<-arima(facial_cleanser_daily_additive$random, order = c(2,0,2))
+AIC(facial_cleanser_model3)
+```
+
+When adjacent parameters also checked, still model 1 which has (1,0,3) parameters is better in terms of AIC values, therefore it is chosen.
+
+Fitting the model
+
+```{r}
+model_forecast_error <- predict(facial_cleanser_model, n.ahead = 11)$pred
+last_trend_value <-tail(facial_cleanser_daily_additive$trend[!is.na(facial_cleanser_daily_additive$trend)],1)
+seasonality=facial_cleanser_daily_additive$seasonal[295:305]
+facial_cleanser_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+facial_cleanser_daily_te$forecast<-paste(facial_cleanser_arima_forecast)
+facial_cleanser_daily_te$forecast<-as.numeric(facial_cleanser_daily_te$forecast)
+
+
+ggplot(facial_cleanser_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Plot above shows for 10 days actual and predicted values with ARIMA model that we built on decomposed random part. While actual sales seesaw sharp, predicted sales has smooth changes day by day. WMAPE should also be checked.
+
+
+
+```{r}
+error_test(facial_cleanser_daily_te$sold_count,facial_cleanser_daily_te$forecast)
+```
+
+WMAPE value is 17% which is not bad. To obtain a better model, appropriate regressors should be investigated.
+
+## Regressor Search
+
+```{r}
+facial_cleanser_lm1<-lm(sold_count~visit_count+is.discount_days, data=facial_cleanser_daily_tr)
+summary(facial_cleanser_lm1)
+facial_cleanser_lm2<-lm(sold_count~category_sold+price, data=facial_cleanser_daily_tr)
+summary(facial_cleanser_lm2)
+facial_cleanser_lm3<-lm(sold_count~price+favored_count+category_sold, data=facial_cleanser_daily_tr)
+summary(facial_cleanser_lm3)
+facial_cleanser_lm4<-lm(sold_count~favored_count+basket_count+visit_count+is.discount_days+category_sold, data=facial_cleanser_daily_tr)
+summary(facial_cleanser_lm4)
+
+facial_cleanser_daily_te$forecastlm1<-predict(facial_cleanser_lm1,facial_cleanser_daily_te)
+facial_cleanser_daily_te$forecastlm2<-predict(facial_cleanser_lm2,facial_cleanser_daily_te)
+facial_cleanser_daily_te$forecastlm3<-predict(facial_cleanser_lm3,facial_cleanser_daily_te)
+facial_cleanser_daily_te$forecastlm4<-predict(facial_cleanser_lm4,facial_cleanser_daily_te)
+
+error_test(facial_cleanser_daily_te$sold_count,facial_cleanser_daily_te$forecastlm1)
+error_test(facial_cleanser_daily_te$sold_count,facial_cleanser_daily_te$forecastlm2)
+error_test(facial_cleanser_daily_te$sold_count,facial_cleanser_daily_te$forecastlm3)
+error_test(facial_cleanser_daily_te$sold_count,facial_cleanser_daily_te$forecastlm4)
+```
+
+4 different multiple linear regression model is built to understand which regressors are explaining the model better.
+In terms of adjusted R square, 4th model is explaining sales behavior better than others. When WMAPE is checked, 1st model has minimum value among all models. Nevertheless, 1st and 4th model has close WMAPE values. Therefore, 4th model's regressors will be chosen which are favored count, basket count, visit count, category sold and discount days.
+
+## ARIMAX Model
+
+```{r}
+facial_cleanser_xreg1<-cbind(facial_cleanser_daily_tr$favored_count,
+                  facial_cleanser_daily_tr$basket_count,
+                  facial_cleanser_daily_tr$category_sold,
+                  facial_cleanser_daily_tr$is.discount_days,
+                  facial_cleanser_daily_tr$visit_count)
+facial_cleanser_xreg2<-cbind(facial_cleanser_daily_te$favored_count,
+                  facial_cleanser_daily_te$basket_count,
+                  facial_cleanser_daily_te$category_sold,
+                  facial_cleanser_daily_te$is.discount_days,
+                  facial_cleanser_daily_te$visit_count)
+
+facial_cleanser_arimax<-Arima(facial_cleanser_ts_daily,xreg=as.matrix(facial_cleanser_xreg1),order=c(1,0,3))
+facial_cleanser_daily_te$forecastarimax<-forecast(facial_cleanser_arimax,xreg=as.matrix(facial_cleanser_xreg2))$mean
+error_test(facial_cleanser_daily_te$sold_count,facial_cleanser_daily_te$forecastarimax)
+```
+
+
+WMAPE is 0.18 which is better than multiple linear regression model with same regressors. Plot below shows forecasted values with ARIMAX vs actual sales.
+
+```{r}
+ggplot(facial_cleanser_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+
+```
+
+As can be seen from plot, actual and forecasted values are close to each other and WMAPE is low as desired. Facial cleanser sales count explained clearly with favored count, basket count, category sold, visit count and discount days.
+
+# Sleepy Baby Wet Wipe 
+
+## Decomposition
+
+```{r}
+babywipe<-subset(alldata, alldata$product_content_id==4066298)
+babywipe_daily_tr<-babywipe[babywipe$event_date<"2021-06-21"]
+babywipe_daily_te<-babywipe[babywipe$event_date>="2021-06-21"]
+plot(babywipe_daily_tr$sold_count, type ='l')
+```
+
+ The chart above shows a visualized version of the data. Looking at the graph, it can be said that there are outlier points and seasonality is visible.
+
+```{r}
+babywipe_ts_daily<-ts(babywipe_daily_tr$sold_count, freq=7)
+tsdisplay(babywipe_ts_daily)
+```
+
+In order to obtain a time series, necessary manipulations were made on the data. ACF plot shows significant correlation at lag 1,2 and 3, which shows that data has trend.
+
+```{r}
+babywipe_daily_additive<-decompose(babywipe_ts_daily, type ="additive")
+babywipe_daily_multiplicative<-decompose(babywipe_ts_daily, type ="multiplicative")
+plot(babywipe_daily_additive)
+plot(babywipe_daily_multiplicative)
+```
+
+The trend, seasonal and random graphs, which are formed when decomposed as additive and multiplicative, are shown above. Zero mean assumption looks like satisfied for both additive and multiplicative random parts. Neverthless, additive random part has visibly less variance compared to multiplicative random part.
+
+In order to understand which model is better, the method to be used in the continuation of the study can be decided by applying specific tests that can measure stationarity for random part.
+
+
+```{r}
+test17=ur.kpss(babywipe_daily_additive$random, use.lag="7")
+summary(test17)
+test18=ur.kpss(babywipe_daily_multiplicative$random, use.lag="7")
+summary(test18)
+```
+
+The test-statistic for both decomposition method is smaller than the crucial value, indicating that we are unable to reject the null hypothesis. As a result, we can conclude the random data is stationary. However, additive decomposition has smaller test statistic. So, it should be used for further analysis.
+
+```{r}
+plot(babywipe_daily_additive$seasonal[1:30], type='l')
+plot(babywipe_daily_additive$trend, type='l')
+```
+
+Plots above show closer looks for trend and seasonal components of additive decomposition .
+
+Since there are not enough data points, decomposition cannot made different levels. Altough we cannot decompose, weekly and monthly plots can be seen below.
+
+```{r}
+babywipe_xts<-xts(babywipe_daily_tr$sold_count, order.by=as.Date(babywipe_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(babywipe_xts,on="weeks")
+babywipe_xts_weekly<-period.apply(babywipe_xts,INDEX=weekly,FUN=mean)
+plot(babywipe_xts_weekly)
+monthly<-endpoints(babywipe_xts,on="months")
+babywipe_xts_monthly<-period.apply(babywipe_xts,INDEX=monthly,FUN=mean)
+plot(babywipe_xts_monthly)
+```
+
+Sales in November are influenced by discount days which are specified to get a better prediction outcome.
+
+## ARIMA Model
+
+```{r}
+tsdisplay(babywipe_daily_additive$random, na.action = na.omit)
+```
+
+According to ACF plot, there is significant negative correlation at lag 3. Hence, moving average parameter should be 3. Also, it can be seen from PACF plot that correlation significantly decreased after lag 3 which means that AR parameter should be 3.
+
+```{r}
+babywipe_model<-arima(babywipe_daily_additive$random, order = c(3,0,3))
+AIC(babywipe_model)
+babywipe_model2<-arima(babywipe_daily_additive$random, order = c(2,0,3))
+AIC(babywipe_model2)
+babywipe_model3<-arima(babywipe_daily_additive$random, order = c(1,0,3))
+AIC(babywipe_model3)
+```
+
+Model 2 is better in terms of AIC values, therefore it is chosen.
+
+Fitting the model
+
+```{r}
+model_forecast_error <- predict(babywipe_model2, n.ahead = 11)$pred
+last_trend_value <-tail(babywipe_daily_additive$trend[!is.na(babywipe_daily_additive$trend)],1)
+seasonality=babywipe_daily_additive$seasonal[295:305]
+babywipe_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+babywipe_daily_te$forecast<-paste(babywipe_arima_forecast)
+babywipe_daily_te$forecast<-as.numeric(babywipe_daily_te$forecast)
+
+
+ggplot(babywipe_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Plot above shows for 10 days actual and predicted values with ARIMA model that we built on decomposed random part. Seasonal effects are seen clearly between actual and fitted values. Forecasted values are higher than actual due to the fact that last trend value is used for all predictions. If different model was built in order to predict trend values for coming days, better result may achieved.
+
+
+
+```{r}
+error_test(babywipe_daily_te$sold_count,babywipe_daily_te$forecast)
+
+
+```
+
+WMAPE is 0.61. Model can be improved by adding regressor which will lower WMAPE.
+
+
+## Regressor Search
+
+```{r}
+babywipe_lm1<-lm(sold_count~visit_count+is.discount_days, data=babywipe_daily_tr)
+summary(babywipe_lm1)
+babywipe_lm2<-lm(sold_count~category_sold+price, data=babywipe_daily_tr)
+summary(babywipe_lm2)
+babywipe_lm3<-lm(sold_count~price+favored_count+basket_count+category_sold, data=babywipe_daily_tr)
+summary(babywipe_lm3)
+babywipe_lm4<-lm(sold_count~favored_count+basket_count+category_sold+is.discount_days, data=babywipe_daily_tr)
+summary(babywipe_lm4)
+
+babywipe_daily_te$forecastlm1<-predict(babywipe_lm1,babywipe_daily_te)
+babywipe_daily_te$forecastlm2<-predict(babywipe_lm2,babywipe_daily_te)
+babywipe_daily_te$forecastlm3<-predict(babywipe_lm3,babywipe_daily_te)
+babywipe_daily_te$forecastlm4<-predict(babywipe_lm4,babywipe_daily_te)
+
+error_test(babywipe_daily_te$sold_count,babywipe_daily_te$forecastlm1)
+error_test(babywipe_daily_te$sold_count,babywipe_daily_te$forecastlm2)
+error_test(babywipe_daily_te$sold_count,babywipe_daily_te$forecastlm3)
+error_test(babywipe_daily_te$sold_count,babywipe_daily_te$forecastlm4)
+```
+
+4 different multiple linear regression model is built to understand which regressors are explaining model better.
+In terms of adjusted R square, 4th model is explaining sales behavior better than others. When WMAPE is checked, 1st model has minimum value among all models. Nevertheless, 1st and 4th model has close WMAPE values. Therefore, 4th model's regressors will be chosen which are favored count, basket count, category sold and whether is it discount day or not.
+
+## ARIMAX Model
+
+```{r}
+babywipe_xreg1<-cbind(babywipe_daily_tr$favored_count,
+                  babywipe_daily_tr$basket_count,
+                  babywipe_daily_tr$category_sold,
+                  babywipe_daily_tr$is.discount_days)
+babywipe_xreg2<-cbind(babywipe_daily_te$favored_count,
+                  babywipe_daily_te$basket_count,
+                  babywipe_daily_te$category_sold,
+                  babywipe_daily_te$is.discount_days)
+
+babywipe_arimax<-Arima(babywipe_ts_daily,xreg=as.matrix(babywipe_xreg1),order=c(2,0,3))
+babywipe_daily_te$forecastarimax<-forecast(babywipe_arimax,xreg=as.matrix(babywipe_xreg2))$mean
+error_test(babywipe_daily_te$sold_count,babywipe_daily_te$forecastarimax)
+```
+
+
+WMAPE is 0.14 which is desirable for forecasting. Plot below shows forecasted values with ARIMAX vs actual sales.
+
+```{r}
+ggplot(babywipe_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+
+```
+
+As can be seen from plot, actual and forecasted values are close to each other and WMAPE is low as desired. Wet wipes sales count explained clearly with favored count, basket count, category sold and discount days.
+
+# Altınyıldız Classics Coat 
+
+## Decomposition
+
+```{r}
+mont<-subset(alldata, alldata$product_content_id==48740784)
+#mont_xts<-xts(mont,order.by=mont$event_date)
+mont_daily_tr<-mont[mont$event_date<"2021-06-21"]
+mont_daily_te<-mont[mont$event_date>="2021-06-21"]
+plot(mont$sold_count, type = 'l')
+```
+
+Plot above shows sold counts of Altınyıldız Classics coat. Coat were available only at winter and at certain days.
+
+
+```{r}
+mont_ts_daily<-ts(mont_daily_tr$sold_count, freq=7)
+tsdisplay(mont_ts_daily)
+```
+
+Necessary data manipulations are made in order to construct a time series object with frequency 7. We see autocorrelation at lag 7 resulting that there is seasonality in weekly level. It will be examined further after decomposition. 
+
+
+```{r}
+mont_daily_additive<-decompose(mont_ts_daily, type ="additive")
+mont_daily_multiplicative<-decompose(mont_ts_daily, type ="multiplicative")
+plot(mont_daily_additive)
+plot(mont_daily_multiplicative)
+```
+
+Since the coat is not sold at certain months constant variance assumption is violated in both cases.
+
+In order to understand which model is better, the method to be used in the continuation of the study can be decided by applying specific tests that can measure stationarity for random part.
+
+
+```{r}
+test1=ur.kpss(mont_daily_additive$random, use.lag="7")
+summary(test1)
+test2=ur.kpss(mont_daily_multiplicative$random, use.lag="7")
+summary(test2)
+```
+
+Test statistic of additive decomposition resulted better therefore it is chosen for further examinations.
+
+```{r}
+plot(mont_daily_additive$seasonal[1:30], type='l')
+plot(mont_daily_additive$trend, type='l')
+```
+
+Plots above show closer looks for trend and seasonal components of additive decomposition. We can clearly see a seasonality in daily level.
+
+Since there are not enough data points, decomposition cannot made at different levels. Although we cannot decompose, weekly and monthly plots can be seen below.
+
+Weekly 
+
+```{r}
+mont_xts<-xts(mont_daily_tr$sold_count, order.by=as.Date(mont_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(mont_xts,on="weeks")
+mont_xts_weekly<-period.apply(mont_xts,INDEX=weekly,FUN=mean)
+plot(mont_xts_weekly)
+```
+
+Monthly
+
+```{r}
+mont_xts<-xts(mont_daily_tr$sold_count, order.by=as.Date(mont_daily_tr$event_date,"%d.%m.%Y"))
+monthly<-endpoints(mont_xts,on="months")
+mont_xts_weekly<-period.apply(mont_xts,INDEX=monthly,FUN=mean)
+plot(mont_xts_weekly)
+```
+
+## ARIMA Model
+
+```{r}
+tsdisplay(mont_daily_additive$random, na.action = na.omit)
+mont_model<-arima(mont_daily_additive$random, order = c(3,0,4))
+summary(mont_model)
+```
+
+Random component of the additive model is investigated in terms of autocorrelation and partial autocorrelation to find appropriate p,d,q values. There is a significant autocorrelation at lag 3  in ACF and partial autocorrelation decreases after lag 4, therefore MA 3 and AR 4 can be used 
+
+```{r}
+mont_model2<-arima(mont_daily_additive$random, order = c(2,0,4))
+AIC(mont_model2)
+```
+
+Model 2 is better in terms of AIC values, therefore it is chosen to perform the forecast. 
+
+Fitting the model
+
+```{r}
+model_forecast_error <- predict(mont_model2, n.ahead = 11)$pred
+last_trend_value <-tail(mont_daily_additive$trend[!is.na(mont_daily_additive$trend)],1)
+seasonality=mont_daily_additive$seasonal[295:305]
+mont_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+mont_daily_te$forecast<-paste(mont_arima_forecast)
+mont_daily_te$forecast<-as.numeric(mont_daily_te$forecast)
+
+
+ggplot(mont_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+
+```{r}
+error_test(mont_daily_te$sold_count,mont_daily_te$forecast)
+```
+In this case, the value of WMAPE turned out to be really high, because on some days the product is not available, and ARIMA could not predict whether the product would be sold
+
+## Regressor Search
+
+We constructed three different linear model and compared the wmape values to decide on the regressors that will be added to ARIMA model
+
+```{r}
+mont_lm1<-lm(sold_count~visit_count+is.discount_days, data=mont_daily_tr)
+summary(mont_lm1)
+mont_lm2<-lm(sold_count~category_sold+price, data=mont_daily_tr)
+summary(mont_lm2)
+mont_lm3<-lm(sold_count~favored_count+basket_count, data=mont_daily_tr)
+summary(mont_lm3)
+
+mont_daily_te$forecastlm1<-predict(mont_lm1,mont_daily_te)
+mont_daily_te$forecastlm2<-predict(mont_lm2,mont_daily_te)
+mont_daily_te$forecastlm3<-predict(mont_lm3,mont_daily_te)
+
+error_test(mont_daily_te$sold_count,mont_daily_te$forecastlm1)
+error_test(mont_daily_te$sold_count,mont_daily_te$forecastlm2)
+error_test(mont_daily_te$sold_count,mont_daily_te$forecastlm3)
+```
+
+Model 1 performed better with a wmape value of 55%. Despite its adjusted R-square value Model 1 resulted better at wmape therefore discount days information and visit counts will be used as regressors.
+
+## ARIMAX Model
+
+```{r}
+mont_xreg1<-cbind(mont_daily_tr$is.discount_days,
+                  mont_daily_tr$visit_count)
+mont_xreg2<-cbind(mont_daily_te$is.discount_days,
+                  mont_daily_te$visit_count)
+
+mont_arimax<-Arima(mont_ts_daily,xreg=as.matrix(mont_xreg1),order=c(2,0,4))
+mont_daily_te$forecastarimax<-forecast(mont_arimax,xreg=as.matrix(mont_xreg2))$mean
+error_test(mont_daily_te$sold_count,mont_daily_te$forecastarimax)
+```
+With the addition of regressors WMAPE value decreased from 85% to 57%.
+
+```{r}
+ggplot(mont_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Above plot shows the forecasted and actual values with the ARIMAX model. Model significantly improved with the addition of regressors.
+
+# Oral-B Toothbrush
+
+## Decomposition
+
+```{r}
+oralb<-subset(alldata, alldata$product_content_id==32939029)
+#oralb_xts<-xts(oralb,order.by=oralb$event_date)
+oralb_daily_tr<-oralb[oralb$event_date<"2021-06-21"]
+oralb_daily_te<-oralb[oralb$event_date>="2021-06-21"]
+plot(oralb$sold_count, type='l')
+```
+
+Plot above shows sold counts of Oral-B Toothbrush. Variance seems increasing and also sales are increasing over time.
+
+```{r}
+oralb_ts_daily<-ts(oralb_daily_tr$sold_count, freq=7)
+tsdisplay(oralb_ts_daily)
+```
+Necessary data manipulations are made in order to obtain daily data. ACF plot shows high correlation and PACF shows only significant correlation at lag 1. It will be examined further after decomposition.
+
+```{r}
+oralb_daily_additive<-decompose(oralb_ts_daily, type ="additive")
+oralb_daily_multiplicative<-decompose(oralb_ts_daily, type ="multiplicative")
+plot(oralb_daily_additive)
+plot(oralb_daily_multiplicative)
+```
+For additive decomposition random part has increasing variance, which does not satisfy constants variance assumption.For multiplicative decomposition random part has decreasing variance, which does not satisfy constants variance assumption as well.
+
+In order to understand which model is better, the method to be used in the continuation of the study can be decided by applying specific tests that can measure stationarity for random part.
+
+
+```{r}
+test1=ur.kpss(oralb_daily_additive$random, use.lag="7")
+summary(test1)
+test2=ur.kpss(oralb_daily_multiplicative$random, use.lag="7")
+summary(test2)
+```
+
+Test statistic of additive decomposition resulted better therefore it is chosen for further examinations.
+
+```{r}
+plot(oralb_daily_additive$seasonal[1:30], type='l')
+plot(oralb_daily_additive$trend, type='l')
+```
+Plots above show closer looks for trend and seasonal components of additive decomposition. We can clearly see a seasonality in daily level. 
+
+Since there are not enough data points, decomposition cannot made different levels. Altough we cannot decompose, weekly and monthly plots can be seen below.
+
+Weekly 
+
+```{r}
+oralb_xts<-xts(oralb_daily_tr$sold_count, order.by=as.Date(oralb_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(oralb_xts,on="weeks")
+oralb_xts_weekly<-period.apply(oralb_xts,INDEX=weekly,FUN=mean)
+plot(oralb_xts_weekly)
+```
+
+Monthly
+
+```{r}
+oralb_xts<-xts(oralb_daily_tr$sold_count, order.by=as.Date(oralb_daily_tr$event_date,"%d.%m.%Y"))
+monthly<-endpoints(oralb_xts,on="months")
+oralb_xts_weekly<-period.apply(oralb_xts,INDEX=monthly,FUN=mean)
+plot(oralb_xts_weekly)
+```
+
+Weekly and monthly plots shows demand for such product increased over time. Even so, there are still outlier weeks and months that cannot be explained with only sold item count. Price or promotions may affect such outlier points.
+
+
+## ARIMA Model
+
+To decide on the parameters of ARIMA model, autocorrelation and partial autocorrelation of the random component of additive model are investigated.
+
+```{r}
+tsdisplay(oralb_daily_additive$random, na.action = na.omit)
+oralb_model<-arima(oralb_daily_additive$random, order = c(3,0,3))
+summary(oralb_model)
+```
+As can be seen from the graphs there is significant negative autocorrelation in lag 3 at ACF and partial autocorrelation decreased significantly after lag 3 in PACF therefore parameters would be selected as (3,0,3)
+
+```{r}
+oralb_model2<-arima(oralb_daily_additive$random, order = c(2,0,3))
+AIC(oralb_model2)
+```
+
+Model 2 is better in terms of AIC values, therefore it is chosen to construct the ARIMA model
+
+Fitting the model
+
+
+```{r}
+model_forecast_error <- predict(oralb_model2, n.ahead = 11)$pred
+last_trend_value <-tail(oralb_daily_additive$trend[!is.na(oralb_daily_additive$trend)],1)
+seasonality=oralb_daily_additive$seasonal[295:305]
+oralb_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+oralb_daily_te$forecast<-paste(oralb_arima_forecast)
+oralb_daily_te$forecast<-as.numeric(oralb_daily_te$forecast)
+
+
+ggplot(oralb_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+From above plot, it can be seen that we are overpredicting, it is mainly due to the constant trend assumption, with the addition of regressors this bias may be decreased. 
+
+
+```{r}
+error_test(oralb_daily_te$sold_count,oralb_daily_te$forecast)
+```
+WMAPE value is too much in this case because of the reasons mentioned above.
+
+## Regressor Search
+To decide on which regressors to use, 3 different linear models are constructed and compared in terms of their error rates. 
+
+```{r}
+oralb_lm1<-lm(sold_count~visit_count+is.discount_days, data=oralb_daily_tr)
+summary(oralb_lm1)
+oralb_lm2<-lm(sold_count~category_sold+price, data=oralb_daily_tr)
+summary(oralb_lm2)
+oralb_lm3<-lm(sold_count~favored_count+basket_count, data=oralb_daily_tr)
+summary(oralb_lm3)
+
+oralb_daily_te$forecastlm1<-predict(oralb_lm1,oralb_daily_te)
+oralb_daily_te$forecastlm2<-predict(oralb_lm2,oralb_daily_te)
+oralb_daily_te$forecastlm3<-predict(oralb_lm3,oralb_daily_te)
+
+error_test(oralb_daily_te$sold_count,oralb_daily_te$forecastlm1)
+error_test(oralb_daily_te$sold_count,oralb_daily_te$forecastlm2)
+error_test(oralb_daily_te$sold_count,oralb_daily_te$forecastlm3)
+```
+
+Model 3 resulted a WMAPE of 14% it is much lower than the wmape of the ARIMA model. Favored count and basket count will be added to the model. 
+
+## ARIMAX Model
+```{r}
+oralb_xreg1<-cbind(oralb_daily_tr$favored_count,
+                  oralb_daily_tr$basket_count)
+oralb_xreg2<-cbind(oralb_daily_te$favored_count,
+                  oralb_daily_te$basket_count)
+
+oralb_arimax<-Arima(oralb_ts_daily,xreg=as.matrix(oralb_xreg1),order=c(3,0,3))
+oralb_daily_te$forecastarimax<-forecast(oralb_arimax,xreg=as.matrix(oralb_xreg2))$mean
+error_test(oralb_daily_te$sold_count,oralb_daily_te$forecastarimax)
+```
+With the addition of regressors wmape value increased to 14.4%, in this case ARIMA doesn't perform well. 
+```{r}
+ggplot(oralb_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Above plot shows the fitted values of the last model. Model fits well with the actual values.
+
+# Trendyolmilla Bikini 1
+
+## Decomposition
+
+```{r}
+bikini1<-subset(alldata, alldata$product_content_id==73318567)
+bikini1_daily_tr<-bikini1[bikini1$event_date<"2021-06-21"]
+bikini1_daily_te<-bikini1[bikini1$event_date>="2021-06-21"]
+plot(bikini1$sold_count, type = 'l')
+```
+Plot above shows the sold count for bikini1. Sale volumes increased at summer and also there were sales at March
+
+
+```{r}
+bikini1_ts_daily<-ts(bikini1_daily_tr$sold_count, freq=7)
+tsdisplay(bikini1_ts_daily)
+```
+Autocorrelation values are decreasing and PACF shows significant correlation at lag1. 
+```{r}
+bikini1_daily_additive<-decompose(bikini1_ts_daily, type ="additive")
+bikini1_daily_multiplicative<-decompose(bikini1_ts_daily, type ="multiplicative")
+plot(bikini1_daily_additive)
+plot(bikini1_daily_multiplicative)
+```
+Constant variance assumption is violated in both case In order to understand which model is better, the method to be used in the continuation of the study can be decided by applying specific tests that can measure stationarity for random part.
+```{r}
+test1=ur.kpss(bikini1_daily_additive$random, use.lag="7")
+summary(test1)
+test2=ur.kpss(bikini1_daily_multiplicative$random, use.lag="7")
+summary(test2)
+```
+Test statistic of additivie decomposition resulted better, therefore it is chosen for further examination.
+
+```{r}
+plot(bikini1_daily_additive$seasonal[1:30], type='l')
+plot(bikini1_daily_additive$trend, type='l')
+```
+Checking the seasonal component, we can clearly see seasonality in daily level. Plots above show closer looks for trend and seasonal components of additive decomposition.
+Since there are not enough data points, decomposition cannot made different levels. Altough we cannot decompose, weekly and monthly plots can be seen below.
+
+Weekly 
+
+```{r}
+bikini1_xts<-xts(bikini1_daily_tr$sold_count, order.by=as.Date(bikini1_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(bikini1_xts,on="weeks")
+bikini1_xts_weekly<-period.apply(bikini1_xts,INDEX=weekly,FUN=mean)
+plot(bikini1_xts_weekly)
+```
+
+Monthly
+
+```{r}
+bikini1_xts<-xts(bikini1_daily_tr$sold_count, order.by=as.Date(bikini1_daily_tr$event_date,"%d.%m.%Y"))
+monthly<-endpoints(bikini1_xts,on="months")
+bikini1_xts_weekly<-period.apply(bikini1_xts,INDEX=monthly,FUN=mean)
+plot(bikini1_xts_weekly)
+```
+
+## ARIMA Model
+
+To decide on the parameters of ARIMA model, autocorrelation and partial autocorrelation of the random component of additive model are investigated.
+
+```{r}
+tsdisplay(bikini1_daily_additive$random, na.action = na.omit)
+bikini1_model<-arima(bikini1_daily_additive$random, order = c(5,0,5))
+summary(bikini1_model)
+```
+As can be seen from the graphs there is significant negative autocorrelation in lag 5 at ACF and partial autocorrelation decreased significantly after lag 5 in PACF therefore parameters would be selected as (5,0,5)
+
+```{r}
+bikini1_model2<-arima(bikini1_daily_additive$random, order = c(5,0,4))
+AIC(bikini1_model2)
+```
+
+Model 2 is better in terms of AIC values, therefore it is chosen to construct the ARIMA model
+
+Fitting the model
+
+
+```{r}
+model_forecast_error <- predict(bikini1_model2, n.ahead = 11)$pred
+last_trend_value <-tail(bikini1_daily_additive$trend[!is.na(bikini1_daily_additive$trend)],1)
+seasonality=bikini1_daily_additive$seasonal[295:305]
+bikini1_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+bikini1_daily_te$forecast<-paste(bikini1_arima_forecast)
+bikini1_daily_te$forecast<-as.numeric(bikini1_daily_te$forecast)
+
+
+ggplot(bikini1_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+From above plot, it can be seen that we are overpredicting, it is mainly due to the constant trend assumption, with the addition of regressors this bias may be decreased. 
+
+
+```{r}
+error_test(bikini1_daily_te$sold_count,bikini1_daily_te$forecast)
+```
+WMAPE value is too much in this case because of the reasons mentioned above.
+
+## Regressor Search
+
+To decide on which regressors to use, 3 different linear models are constructed and compared in terms of their error rates. 
+
+```{r}
+bikini1_lm1<-lm(sold_count~price+is.discount_days, data=bikini1_daily_tr)
+summary(bikini1_lm1)
+bikini1_lm2<-lm(sold_count~category_sold+price, data=bikini1_daily_tr)
+summary(bikini1_lm2)
+bikini1_lm3<-lm(sold_count~favored_count+basket_count, data=bikini1_daily_tr)
+summary(bikini1_lm3)
+
+bikini1_daily_te$forecastlm1<-predict(bikini1_lm1,bikini1_daily_te)
+bikini1_daily_te$forecastlm2<-predict(bikini1_lm2,bikini1_daily_te)
+bikini1_daily_te$forecastlm3<-predict(bikini1_lm3,bikini1_daily_te)
+
+error_test(bikini1_daily_te$sold_count,bikini1_daily_te$forecastlm1)
+error_test(bikini1_daily_te$sold_count,bikini1_daily_te$forecastlm2)
+error_test(bikini1_daily_te$sold_count,bikini1_daily_te$forecastlm3)
+```
+
+Model 3 resulted a WMAPE of 18% it is much lower than the wmape of the ARIMA model. Favored count and basket count will be added to the model. 
+
+## ARIMAX Model
+
+```{r}
+bikini1_xreg1<-cbind(bikini1_daily_tr$favored_count,
+                  bikini1_daily_tr$basket_count)
+bikini1_xreg2<-cbind(bikini1_daily_te$favored_count,
+                  bikini1_daily_te$basket_count)
+
+bikini1_arimax<-Arima(bikini1_ts_daily,xreg=as.matrix(bikini1_xreg1),order=c(3,0,3))
+bikini1_daily_te$forecastarimax<-forecast(bikini1_arimax,xreg=as.matrix(bikini1_xreg2))$mean
+error_test(bikini1_daily_te$sold_count,bikini1_daily_te$forecastarimax)
+```
+With the addition of regressors wmape value decreased to 18.3%. 
+
+
+```{r}
+ggplot(bikini1_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Above plot shows the fitted values of the last model. Model fits well with the actual values.
+
+
+# Trendyolmilla Bikini 2
+
+## Decomposition
+
+```{r}
+bikini2<-subset(alldata, alldata$product_content_id==32737302)
+#bikini2_xts<-xts(bikini2,order.by=bikini2$event_date)
+bikini2_daily_tr<-bikini2[bikini2$event_date<"2021-06-21"]
+bikini2_daily_te<-bikini2[bikini2$event_date>="2021-06-21"]
+plot(bikini2$sold_count, type='l')
+```
+Plot above shows the sold counts for bikini2. Sales volumes shows a trend after January.
+
+
+```{r}
+bikini2_ts_daily<-ts(bikini2_daily_tr$sold_count, freq=7)
+tsdisplay(bikini2_ts_daily)
+```
+Autocorrelation plot indicates a trend and there is a significant correlation only in lag1 at PACF.
+```{r}
+bikini2_daily_additive<-decompose(bikini2_ts_daily, type ="additive")
+bikini2_daily_multiplicative<-decompose(bikini2_ts_daily, type ="multiplicative")
+plot(bikini2_daily_additive)
+plot(bikini2_daily_multiplicative)
+```
+For additive decomposition variance seems more constant comparing with the multiplicative decomposition. At multiplicative decomposition there is pikes at some days. The method to be used in the continuation of the study can be decided by applying specific tests that can measure stationarity for random part.
+
+```{r}
+test1=ur.kpss(bikini2_daily_additive$random, use.lag="7")
+summary(test1)
+test2=ur.kpss(bikini2_daily_multiplicative$random, use.lag="7")
+summary(test2)
+```
+
+Additive decomposition resulted better in terms of the test statistic, therefore it is chosen for further examination 
+
+```{r}
+plot(bikini2_daily_additive$seasonal[1:30], type='l')
+plot(bikini2_daily_additive$trend, type='l')
+```
+Checking the seasonal component, we can clearly see seasonality in daily level. Plots above show closer looks for trend and seasonal components of additive decomposition.
+Since there are not enough data points, decomposition cannot made different levels. Altough we cannot decompose, weekly and monthly plots can be seen below.
+
+Weekly 
+
+```{r}
+bikini2_xts<-xts(bikini2_daily_tr$sold_count, order.by=as.Date(bikini2_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(bikini2_xts,on="weeks")
+bikini2_xts_weekly<-period.apply(bikini2_xts,INDEX=weekly,FUN=mean)
+plot(bikini2_xts_weekly)
+```
+
+Monthly
+
+```{r}
+bikini2_xts<-xts(bikini2_daily_tr$sold_count, order.by=as.Date(bikini2_daily_tr$event_date,"%d.%m.%Y"))
+monthly<-endpoints(bikini2_xts,on="months")
+bikini2_xts_weekly<-period.apply(bikini2_xts,INDEX=monthly,FUN=mean)
+plot(bikini2_xts_weekly)
+```
+We can see the trend occurrence after January from both weekly and monthly transformed data.
+
+
+## ARIMA Model
+
+To decide on the parameters of ARIMA model, autocorrelation and partial autocorrelation of the random component of additive model are investigated.
+
+```{r}
+tsdisplay(bikini2_daily_additive$random, na.action = na.omit)
+bikini2_model<-arima(bikini2_daily_additive$random, order = c(3,0,3))
+summary(bikini2_model)
+```
+As can be seen from the graphs there is significant negative autocorrelation in lag 3 at ACF and partial autocorrelation decreased significantly after lag 3 in PACF therefore parameters would be selected as (3,0,3)
+
+```{r}
+bikini2_model2<-arima(bikini2_daily_additive$random, order = c(2,0,3))
+AIC(bikini2_model2)
+```
+
+Model 2 is better in terms of AIC values, therefore it is chosen to construct the ARIMA model
+
+Fitting the model
+
+
+```{r}
+model_forecast_error <- predict(bikini2_model2, n.ahead = 11)$pred
+last_trend_value <-tail(bikini2_daily_additive$trend[!is.na(bikini2_daily_additive$trend)],1)
+seasonality=bikini2_daily_additive$seasonal[295:305]
+bikini2_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+bikini2_daily_te$forecast<-paste(bikini2_arima_forecast)
+bikini2_daily_te$forecast<-as.numeric(bikini2_daily_te$forecast)
+
+
+ggplot(bikini2_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+From above plot, it can be seen that we are overpredicting, it is mainly due to the constant trend assumption, with the addition of regressors this bias may be decreased. 
+
+
+```{r}
+error_test(bikini2_daily_te$sold_count,bikini2_daily_te$forecast)
+```
+WMAPE value is too much in this case because of the reasons mentioned above.
+
+## Regressor Search
+To decide on which regressors to use, 3 different linear models are constructed and compared in terms of their error rates. 
+
+```{r}
+bikini2_lm1<-lm(sold_count~price+is.discount_days, data=bikini2_daily_tr)
+summary(bikini2_lm1)
+bikini2_lm2<-lm(sold_count~category_sold+price, data=bikini2_daily_tr)
+summary(bikini2_lm2)
+bikini2_lm3<-lm(sold_count~favored_count+basket_count, data=bikini2_daily_tr)
+summary(bikini2_lm3)
+
+bikini2_daily_te$forecastlm1<-predict(bikini2_lm1,bikini2_daily_te)
+bikini2_daily_te$forecastlm2<-predict(bikini2_lm2,bikini2_daily_te)
+bikini2_daily_te$forecastlm3<-predict(bikini2_lm3,bikini2_daily_te)
+
+error_test(bikini2_daily_te$sold_count,bikini2_daily_te$forecastlm1)
+error_test(bikini2_daily_te$sold_count,bikini2_daily_te$forecastlm2)
+error_test(bikini2_daily_te$sold_count,bikini2_daily_te$forecastlm3)
+```
+
+Model 3 resulted a WMAPE of 13.5% it is much lower than the wmape of the ARIMA model. Favored count and basket count will be added to the model. 
+
+## SARIMAX Model
+```{r}
+bikini2_xreg1<-cbind(bikini2_daily_tr$favored_count,
+                  bikini2_daily_tr$basket_count)
+bikini2_xreg2<-cbind(bikini2_daily_te$favored_count,
+                  bikini2_daily_te$basket_count)
+
+bikini2_arimax<-Arima(bikini2_ts_daily,xreg=as.matrix(bikini2_xreg1),order=c(2,0,2))
+bikini2_daily_te$forecastarimax<-forecast(bikini2_arimax,xreg=as.matrix(bikini2_xreg2))$mean
+error_test(bikini2_daily_te$sold_count,bikini2_daily_te$forecastarimax)
+```
+
+With the addition of regressors wmape value decreased to 10%
+
+
+```{r}
+ggplot(bikini2_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Above plot shows the fitted values of the last model. Model fits well with the actual values.
+
+
+
+
+# Trendyolmilla Tayt
+
+## Decomposition
+
+```{r}
+tayt<-subset(alldata, alldata$product_content_id==31515569)
+#tayt_xts<-xts(tayt,order.by=tayt$event_date)
+tayt_daily_tr<-tayt[tayt$event_date<"2021-06-21"]
+tayt_daily_te<-tayt[tayt$event_date>="2021-06-21"]
+plot(tayt$sold_count, type='l')
+```
+Above plot shows the sales volumes for Trendyolmilla Tayt. Tayt has been sold for the whole year and there is some pikes at certain days.
+
+```{r}
+tayt_ts_daily<-ts(tayt_daily_tr$sold_count, freq=7)
+tsdisplay(tayt_ts_daily)
+```
+Necessary data manipulations are made in order to obtain daily data. ACF plot shows decreasing correlation at lag 1,2 and 3 and also there is a correlation after lag 14. PACF shows only significant correlation at lag 1. It will be examined further after decomposition.
+```{r}
+tayt_daily_additive<-decompose(tayt_ts_daily, type ="additive")
+tayt_daily_multiplicative<-decompose(tayt_ts_daily, type ="multiplicative")
+plot(tayt_daily_additive)
+plot(tayt_daily_multiplicative)
+```
+Above plots show trend, seasonal and random components of multiplicative and additive decomposition. There is pikes at certain days in additive decomposition and constant variance assumption is violated. For multiplicative decomposition variance is higher than the additive. The method to be used in the continuation of the study can be decided by applying specific tests that can measure stationarity for random part.
+```{r}
+test1=ur.kpss(tayt_daily_additive$random, use.lag="7")
+summary(test1)
+test2=ur.kpss(tayt_daily_multiplicative$random, use.lag="7")
+summary(test2)
+```
+
+Additive decomposition resulted better and is chosen to be used for futher examination.
+
+Since there are not enough data points, decomposition cannot made in different levels. Although we cannot decompose, weekly and monthly plots can be seen below.
+
+```{r}
+plot(tayt_daily_additive$seasonal[1:30], type='l')
+plot(tayt_daily_additive$trend, type='l')
+```
+
+Weekly 
+
+```{r}
+tayt_xts<-xts(tayt_daily_tr$sold_count, order.by=as.Date(tayt_daily_tr$event_date,"%d.%m.%Y"))
+weekly<-endpoints(tayt_xts,on="weeks")
+tayt_xts_weekly<-period.apply(tayt_xts,INDEX=weekly,FUN=mean)
+plot(tayt_xts_weekly)
+```
+
+Monthly
+
+```{r}
+tayt_xts<-xts(tayt_daily_tr$sold_count, order.by=as.Date(tayt_daily_tr$event_date,"%d.%m.%Y"))
+monthly<-endpoints(tayt_xts,on="months")
+tayt_xts_monthly<-period.apply(tayt_xts,INDEX=monthly,FUN=mean)
+plot(tayt_xts_monthly)
+```
+
+It can be seen that sales volumes of tayt increased at November influenced by the discount days, which are determined in our project to yield better forecast result.
+
+## ARIMA Model
+
+```{r}
+tsdisplay(tayt_daily_additive$random, na.action = na.omit)
+```
+
+According to ACF plot, there is significant negative correlation at lag 4. Hence, moving average parameter should be 4. Also, it can be seen from PACF plot that correlation significantly decreased after lag 1 which means that AR parameter should be 1.
+
+```{r}
+tayt_model<-arima(tayt_daily_additive$random, order = c(1,0,4))
+AIC(tayt_model)
+tayt_model2<-arima(tayt_daily_additive$random, order = c(1,0,3))
+AIC(tayt_model2)
+tayt_model3<-arima(tayt_daily_additive$random, order = c(1,0,2))
+AIC(tayt_model3)
+```
+
+When adjacent parameters also checked, still model 1 which has (1,0,4) parameters is better in terms of AIC values, therefore it is chosen.
+
+Fitting the model
+
+```{r}
+model_forecast_error <- predict(tayt_model, n.ahead = 11)$pred
+last_trend_value <-tail(tayt_daily_additive$trend[!is.na(tayt_daily_additive$trend)],1)
+seasonality=tayt_daily_additive$seasonal[295:305]
+tayt_arima_forecast=model_forecast_error+seasonality+last_trend_value
+
+tayt_daily_te$forecast<-paste(tayt_arima_forecast)
+tayt_daily_te$forecast<-as.numeric(tayt_daily_te$forecast)
+
+
+ggplot(tayt_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecast,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+```
+
+Plot above shows for 10 days actual and predicted values with ARIMA model that we built on decomposed random part.
+Model that we built with ARIMA (1,0,4) parameters shows peaks and downs on sales. It does not clearly explain actual sales data.
+
+```{r}
+error_test(tayt_daily_te$sold_count,tayt_daily_te$forecast)
+```
+
+According to WMAPE  ----------------------------------------
+
+## Regressor Search
+
+```{r}
+tayt_lm1<-lm(sold_count~visit_count+is.discount_days, data=tayt_daily_tr)
+summary(tayt_lm1)
+tayt_lm2<-lm(sold_count~category_sold+price, data=tayt_daily_tr)
+summary(tayt_lm2)
+tayt_lm3<-lm(sold_count~price+favored_count+category_sold, data=tayt_daily_tr)
+summary(tayt_lm3)
+tayt_lm4<-lm(sold_count~favored_count+basket_count+visit_count+is.discount_days, data=tayt_daily_tr)
+summary(tayt_lm4)
+
+tayt_daily_te$forecastlm1<-predict(tayt_lm1,tayt_daily_te)
+tayt_daily_te$forecastlm2<-predict(tayt_lm2,tayt_daily_te)
+tayt_daily_te$forecastlm3<-predict(tayt_lm3,tayt_daily_te)
+tayt_daily_te$forecastlm4<-predict(tayt_lm4,tayt_daily_te)
+
+error_test(tayt_daily_te$sold_count,tayt_daily_te$forecastlm1)
+error_test(tayt_daily_te$sold_count,tayt_daily_te$forecastlm2)
+error_test(tayt_daily_te$sold_count,tayt_daily_te$forecastlm3)
+error_test(tayt_daily_te$sold_count,tayt_daily_te$forecastlm4)
+```
+
+4 different multiple linear regression model is built to understand which regressors are explaining model better.
+In terms of adjusted R square and WMAPE 4th model is explaining sales behavior better than others. Therefore, 4th model's regressors will be chosen which are favored count, basket count, visit count and discount days.
+
+## ARIMAX Model
+
+```{r}
+tayt_xreg1<-cbind(tayt_daily_tr$favored_count,
+                  tayt_daily_tr$basket_count,
+                  tayt_daily_tr$visit_count,
+                  tayt_daily_tr$is.discount_days)
+tayt_xreg2<-cbind(tayt_daily_te$favored_count,
+                  tayt_daily_te$basket_count,
+                  tayt_daily_te$visit_count,
+                  tayt_daily_te$is.discount_days)
+
+tayt_arimax<-Arima(tayt_ts_daily,xreg=as.matrix(tayt_xreg1),order=c(1,0,4))
+tayt_daily_te$forecastarimax<-forecast(tayt_arimax,xreg=as.matrix(tayt_xreg2))$mean
+error_test(tayt_daily_te$sold_count,tayt_daily_te$forecastarimax)
+```
+
+WMAPE is 0.17 which is little less than multiple linear regression model with same regressors. Plot below shows forecasted values with ARIMAX vs actual sales.
+
+```{r}
+ggplot(tayt_daily_te ,aes(x=event_date)) +
+        geom_line(aes(y=sold_count,color='actual')) + 
+        geom_line(aes(y=forecastarimax,color='fitted')) + labs(title = "Actual vs Forecasted Sales", 
+       x = "Time",
+       y = "Sales"
+       )+
+  theme(plot.title = element_text(color = "black", size = 20, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 10, face = "bold", hjust = 0.5),
+        plot.caption = element_text(face = "italic", hjust = 0))
+
+
+```
+
+
+There is ultra difference in forecasted values between ARIMA and ARIMAX models. As can be seen from plot above, regressors improved model.
+
+
+# Conclusion
+
+In this study forecasting models are constructed for various products that are being sold in Trendyol. Products were decomposed to their seasonal and trend components, after deciding on the appropriate decomposition technique, random components of the products are evaluated in terms of their autocorrelation and partial autocorrelation plots to choose the best ARIMA model. Potential regressors are investigated and added to the model according to their WMAPE values. In overall, models resulted well and they can be used in forecasting the upcoming sales volumes. Some of assumptions made such as taking the last trend value and considering it as constant reduced the overall performance of the models, and also since we used the regressor values from test set instead of predicting them, error rates of the real-time forecasts would be higher than the values found in this study. If future product prices were given, more precise forecasting might be achieved. Furthermore, because the data had a large number of missing values, using such variables as regressors was useless. We haven't used other sources like Google Trends to back up our forecasts since we all agreed that sometimes the best data to use is just the basic facts.
+Using other resources may result in better results. 
+
