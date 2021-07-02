@@ -22,6 +22,6 @@
 
 >[Here](files/HW-4-and-5.html) is homework 4 and 5 regarding developing alternative strategies for our term project. 
 
-## Term Project Report
+## Term Project Report (July 2)
 
 >[Here](files/Project-Rmd.html) is our project report.
